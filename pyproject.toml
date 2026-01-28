@@ -1,0 +1,14 @@
+[build-system]
+requires = ["setuptools>=64"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "runlog"
+version = "0.1.0"
+description = "Lightweight file-based experiment logger for PyTorch"
+requires-python = ">=3.9"
+dependencies = ["numpy"]
+
+[project.optional-dependencies]
+images = ["Pillow"]
+dev = ["pytest", "Pillow", "torch"]
