@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import os
+import secrets
 import sys
 import time
 import traceback
@@ -25,7 +26,8 @@ class Run:
         meta: dict | None = None,
         output_formats: dict[str, str] | None = None,
     ) -> None:
-        self.dir = Path(dir)
+        self.run_id: str = _generate_run_id()
+        self.dir = Path(dir) / "runs" / self.run_id
         self.dir.mkdir(parents=True, exist_ok=True)
 
         self._output_formats: dict[str, str] = output_formats or {}
@@ -39,6 +41,7 @@ class Run:
 
         # ── meta ──────────────────────────────────────────────────
         self._meta: dict[str, Any] = {
+            "run_id": self.run_id,
             "status": "running",
             "start_time": self._start_time,
             "start_iso": _isotime(self._start_time),
@@ -196,7 +199,13 @@ class Run:
         write_json(self.dir / "meta.json", self._meta)
 
     def __repr__(self) -> str:
-        return f"Run(dir={str(self.dir)!r}, status={self._meta['status']!r})"
+        return f"Run(id={self.run_id!r}, dir={str(self.dir)!r}, status={self._meta['status']!r})"
+
+
+def _generate_run_id() -> str:
+    ts = time.strftime("%Y-%m-%d_%H-%M-%S")
+    suffix = secrets.token_hex(2)
+    return f"{ts}_{suffix}"
 
 
 def _isotime(ts: float) -> str:

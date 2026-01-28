@@ -17,7 +17,8 @@ def init(
     Parameters
     ----------
     dir:
-        Root directory for this run.  Created if it does not exist.
+        Project / output directory.  Each call creates a unique run
+        under ``{dir}/runs/{timestamp_id}/``.
     config:
         Hyperparameters — accepts a *dict*, a path to a JSON / YAML file,
         an ``argparse.Namespace``, or a dataclass instance.

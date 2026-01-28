@@ -204,6 +204,5 @@ Auto-managed, not written to directly.
 ## Dev
 
 ```bash
-pip install -e ".[dev]"
-pytest
+pip install git+https://github.com/d-rothen/euler-train.git
 ```
