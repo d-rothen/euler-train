@@ -4,11 +4,12 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "euler-train"
-version = "0.1.1"
+version = "0.1.2"
 description = "Lightweight file-based experiment logger for PyTorch"
 requires-python = ">=3.9"
 dependencies = ["numpy"]
 
 [project.optional-dependencies]
 images = ["Pillow"]
-dev = ["pytest", "Pillow", "torch"]
+gpu = ["nvidia-ml-py"]
+dev = ["pytest", "Pillow", "torch", "nvidia-ml-py"]

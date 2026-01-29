@@ -1,8 +1,10 @@
 """Core Run class – the single object a researcher interacts with."""
 from __future__ import annotations
 
+import atexit
 import os
 import secrets
+import signal
 import sys
 import time
 import traceback
@@ -25,6 +27,7 @@ class Run:
         config: Any = None,
         meta: dict | None = None,
         output_formats: dict[str, str] | None = None,
+        gpu_stats_every: int = 100,
     ) -> None:
         self.run_id: str = _generate_run_id()
         self.dir = Path(dir) / "runs" / self.run_id
@@ -33,6 +36,9 @@ class Run:
         self._output_formats: dict[str, str] = output_formats or {}
         self._start_time = time.time()
         self._finished = False
+        self._gpu_handle: Any | None = None
+        self._gpu_available: bool | None = None  # None = not yet probed
+        self._gpu_stats_every: int = gpu_stats_every
 
         # ── config ────────────────────────────────────────────────
         config_dict = normalize_config(config)
@@ -55,6 +61,7 @@ class Run:
         if meta:
             self._meta.update(meta)
         self._flush_meta()
+        self._setup_hooks()
 
     # ── logging ───────────────────────────────────────────────────
 
@@ -81,9 +88,40 @@ class Run:
         if mode == "train":
             record["elapsed_sec"] = round(time.time() - self._start_time, 4)
         record.update(metrics)
+        if step % self._gpu_stats_every == 0:
+            record.update(self._get_gpu_stats())
 
         filename = "train.jsonl" if mode == "train" else "val.jsonl"
         append_jsonl(self.dir / filename, record)
+
+    # ── GPU stats ─────────────────────────────────────────────────
+
+    def _get_gpu_stats(self) -> dict[str, Any]:
+        """Return GPU utilization & memory stats, or {} if unavailable."""
+        if self._gpu_available is None:
+            try:
+                import pynvml
+
+                pynvml.nvmlInit()
+                self._gpu_handle = pynvml.nvmlDeviceGetHandleByIndex(0)
+                self._gpu_available = True
+            except Exception:
+                self._gpu_available = False
+        if not self._gpu_available:
+            return {}
+        import pynvml
+
+        try:
+            util = pynvml.nvmlDeviceGetUtilizationRates(self._gpu_handle)
+            mem = pynvml.nvmlDeviceGetMemoryInfo(self._gpu_handle)
+            return {
+                "gpu_util_pct": util.gpu,
+                "gpu_mem_util_pct": util.memory,
+                "gpu_mem_used_gb": round(mem.used / 1e9, 3),
+                "gpu_mem_total_gb": round(mem.total / 1e9, 3),
+            }
+        except Exception:
+            return {}
 
     # ── visual / heavy outputs ────────────────────────────────────
 
@@ -170,6 +208,7 @@ class Run:
         if self._finished:
             return
         self._finished = True
+        self._teardown_hooks()
         end = time.time()
         self._meta.update(
             status=status,
@@ -185,13 +224,60 @@ class Run:
         return self
 
     def __exit__(self, exc_type, exc_val, exc_tb) -> bool:
-        if exc_type is not None:
-            self._meta["error"] = f"{exc_type.__name__}: {exc_val}"
-            self._meta["traceback"] = traceback.format_exc()
-            self.finish(status="crashed")
-        else:
-            self.finish()
+        if not self._finished:
+            if exc_type is not None:
+                self._meta["error"] = f"{exc_type.__name__}: {exc_val}"
+                self._meta["traceback"] = traceback.format_exc()
+                self.finish(status="crashed")
+            else:
+                self.finish()
         return False  # never suppress exceptions
+
+    # ── process hooks (atexit / signals / excepthook) ────────────
+
+    def _setup_hooks(self) -> None:
+        """Install process-level hooks so meta.json is updated on any exit."""
+        atexit.register(self._on_exit)
+        self._original_excepthook = sys.excepthook
+        sys.excepthook = self._on_exception
+        self._prev_sigterm = None
+        self._prev_sigint = None
+        try:
+            self._prev_sigterm = signal.signal(signal.SIGTERM, self._on_signal)
+            self._prev_sigint = signal.signal(signal.SIGINT, self._on_signal)
+        except ValueError:
+            pass  # not on main thread
+
+    def _teardown_hooks(self) -> None:
+        atexit.unregister(self._on_exit)
+        sys.excepthook = self._original_excepthook
+        try:
+            if self._prev_sigterm is not None:
+                signal.signal(signal.SIGTERM, self._prev_sigterm)
+            if self._prev_sigint is not None:
+                signal.signal(signal.SIGINT, self._prev_sigint)
+        except ValueError:
+            pass
+
+    def _on_exit(self) -> None:
+        if not self._finished:
+            self.finish()
+
+    def _on_exception(self, exc_type, exc_value, exc_tb) -> None:
+        if not self._finished:
+            self._meta["error"] = f"{exc_type.__name__}: {exc_value}"
+            self._meta["traceback"] = "".join(
+                traceback.format_exception(exc_type, exc_value, exc_tb)
+            )
+            self.finish(status="crashed")
+        self._original_excepthook(exc_type, exc_value, exc_tb)
+
+    def _on_signal(self, signum, frame) -> None:
+        if not self._finished:
+            sig_name = signal.Signals(signum).name
+            self._meta["error"] = f"Signal: {sig_name}"
+            self.finish(status="interrupted")
+        sys.exit(128 + signum)
 
     # ── internals ─────────────────────────────────────────────────
 

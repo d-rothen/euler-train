@@ -3,6 +3,8 @@ from __future__ import annotations
 
 import dataclasses
 import json
+import signal
+import sys
 from argparse import Namespace
 from pathlib import Path
 
@@ -597,3 +599,83 @@ class TestLifecycle:
         assert "status='running'" in r
         assert run.run_id in r
         run.finish()
+
+
+# ═══════════════════════════════════════════════════════════════════════════
+#  interrupt / exit hooks
+# ═══════════════════════════════════════════════════════════════════════════
+
+class TestInterruptHandling:
+    def test_atexit_marks_completed(self, tmp_path):
+        """Calling _on_exit (the atexit callback) marks status=completed."""
+        run = runlog.init(dir=str(tmp_path / "r"), config={})
+        run._on_exit()
+
+        meta = _read_json(run.dir / "meta.json")
+        assert meta["status"] == "completed"
+        assert meta["end_time"] is not None
+
+    def test_atexit_noop_if_already_finished(self, tmp_path):
+        run = runlog.init(dir=str(tmp_path / "r"), config={})
+        run.finish()
+        first_meta = _read_json(run.dir / "meta.json")
+
+        run._on_exit()
+        second_meta = _read_json(run.dir / "meta.json")
+        assert first_meta == second_meta
+
+    def test_signal_marks_interrupted(self, tmp_path):
+        run = runlog.init(dir=str(tmp_path / "r"), config={})
+        with pytest.raises(SystemExit) as exc_info:
+            run._on_signal(signal.SIGTERM, None)
+
+        assert exc_info.value.code == 128 + signal.SIGTERM
+        meta = _read_json(run.dir / "meta.json")
+        assert meta["status"] == "interrupted"
+        assert "SIGTERM" in meta["error"]
+        assert meta["end_time"] is not None
+
+    def test_signal_sigint_records_name(self, tmp_path):
+        run = runlog.init(dir=str(tmp_path / "r"), config={})
+        with pytest.raises(SystemExit):
+            run._on_signal(signal.SIGINT, None)
+
+        meta = _read_json(run.dir / "meta.json")
+        assert meta["status"] == "interrupted"
+        assert "SIGINT" in meta["error"]
+
+    def test_excepthook_marks_crashed(self, tmp_path):
+        run = runlog.init(dir=str(tmp_path / "r"), config={})
+        # Swap original hook with a no-op so it doesn't print during tests
+        run._original_excepthook = lambda *args: None
+
+        try:
+            raise ValueError("test error")
+        except ValueError:
+            run._on_exception(*sys.exc_info())
+
+        meta = _read_json(run.dir / "meta.json")
+        assert meta["status"] == "crashed"
+        assert "ValueError: test error" in meta["error"]
+        assert "traceback" in meta
+        assert "test error" in meta["traceback"]
+
+    def test_hooks_cleaned_up_after_finish(self, tmp_path):
+        original_excepthook = sys.excepthook
+        run = runlog.init(dir=str(tmp_path / "r"), config={})
+        # After init, our hook is installed (different from original)
+        assert sys.excepthook is not original_excepthook
+
+        run.finish()
+        # After finish, original is restored
+        assert sys.excepthook is original_excepthook
+
+    def test_signal_inside_context_manager_records_interrupted(self, tmp_path):
+        """Signal during with-block should record 'interrupted', not 'crashed'."""
+        with pytest.raises(SystemExit):
+            with runlog.init(dir=str(tmp_path / "r"), config={}) as run:
+                run._on_signal(signal.SIGINT, None)
+
+        meta = _read_json(run.dir / "meta.json")
+        assert meta["status"] == "interrupted"
+        assert "SIGINT" in meta["error"]

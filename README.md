@@ -210,4 +210,5 @@ Auto-managed, not written to directly.
 
 ```bash
 pip install git+https://github.com/d-rothen/euler-train.git
+uv pip install "euler-train[images,gpu] @ git+https://github.com/d-rothen/euler-train"
 ```
