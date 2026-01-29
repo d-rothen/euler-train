@@ -30,22 +30,31 @@ def _read_jsonl(path: Path) -> list[dict]:
 # ═══════════════════════════════════════════════════════════════════════════
 
 class TestInit:
-    def test_creates_directory_and_files(self, tmp_path):
-        run = runlog.init(dir=str(tmp_path / "run1"), config={"lr": 1e-3})
+    def test_creates_run_subdirectory(self, tmp_path):
+        run = runlog.init(dir=str(tmp_path / "proj"), config={"lr": 1e-3})
         run.finish()
 
-        assert (tmp_path / "run1" / "meta.json").exists()
-        assert (tmp_path / "run1" / "config.json").exists()
+        # run.dir should be {dir}/runs/{run_id}
+        assert run.dir.parent == tmp_path / "proj" / "runs"
+        assert run.dir.name == run.run_id
+        assert (run.dir / "meta.json").exists()
+        assert (run.dir / "config.json").exists()
+
+    def test_run_id_in_meta(self, tmp_path):
+        run = runlog.init(dir=str(tmp_path / "r"), config={})
+        meta = _read_json(run.dir / "meta.json")
+        assert meta["run_id"] == run.run_id
+        run.finish()
 
     def test_config_from_dict(self, tmp_path):
         run = runlog.init(dir=str(tmp_path / "r"), config={"lr": 0.01, "bs": 32})
-        cfg = _read_json(tmp_path / "r" / "config.json")
+        cfg = _read_json(run.dir / "config.json")
         assert cfg == {"lr": 0.01, "bs": 32}
         run.finish()
 
     def test_config_none_writes_empty(self, tmp_path):
         run = runlog.init(dir=str(tmp_path / "r"))
-        cfg = _read_json(tmp_path / "r" / "config.json")
+        cfg = _read_json(run.dir / "config.json")
         assert cfg == {}
         run.finish()
 
@@ -54,7 +63,7 @@ class TestInit:
         cfg_file.write_text(json.dumps({"arch": "resnet", "depth": 50}))
 
         run = runlog.init(dir=str(tmp_path / "r"), config=str(cfg_file))
-        cfg = _read_json(tmp_path / "r" / "config.json")
+        cfg = _read_json(run.dir / "config.json")
         assert cfg["arch"] == "resnet"
         assert cfg["depth"] == 50
         run.finish()
@@ -62,7 +71,7 @@ class TestInit:
     def test_config_from_namespace(self, tmp_path):
         ns = Namespace(lr=1e-4, epochs=10)
         run = runlog.init(dir=str(tmp_path / "r"), config=ns)
-        cfg = _read_json(tmp_path / "r" / "config.json")
+        cfg = _read_json(run.dir / "config.json")
         assert cfg == {"lr": 1e-4, "epochs": 10}
         run.finish()
 
@@ -73,7 +82,7 @@ class TestInit:
             arch: str = "unet"
 
         run = runlog.init(dir=str(tmp_path / "r"), config=Cfg())
-        cfg = _read_json(tmp_path / "r" / "config.json")
+        cfg = _read_json(run.dir / "config.json")
         assert cfg == {"lr": 1e-3, "arch": "unet"}
         run.finish()
 
@@ -83,7 +92,7 @@ class TestInit:
 
     def test_meta_initial_status_is_running(self, tmp_path):
         run = runlog.init(dir=str(tmp_path / "r"), config={})
-        meta = _read_json(tmp_path / "r" / "meta.json")
+        meta = _read_json(run.dir / "meta.json")
         assert meta["status"] == "running"
         assert meta["start_time"] is not None
         assert meta["start_iso"] is not None
@@ -95,7 +104,7 @@ class TestInit:
             dir=str(tmp_path / "r"), config={},
             meta={"description": "ablation A", "tags": ["v2", "fast"]},
         )
-        meta = _read_json(tmp_path / "r" / "meta.json")
+        meta = _read_json(run.dir / "meta.json")
         assert meta["description"] == "ablation A"
         assert meta["tags"] == ["v2", "fast"]
         assert meta["status"] == "running"  # built-in still present
@@ -105,6 +114,14 @@ class TestInit:
         run = runlog.init(dir=str(tmp_path / "r"), config={})
         assert isinstance(run, runlog.Run)
         run.finish()
+
+    def test_multiple_inits_create_separate_runs(self, tmp_path):
+        run1 = runlog.init(dir=str(tmp_path / "r"), config={})
+        run2 = runlog.init(dir=str(tmp_path / "r"), config={})
+        assert run1.dir != run2.dir
+        assert run1.run_id != run2.run_id
+        run1.finish()
+        run2.finish()
 
 
 # ═══════════════════════════════════════════════════════════════════════════
@@ -117,7 +134,7 @@ class TestLog:
         run.log({"loss": 2.3, "lr": 1e-4}, step=0, epoch=0)
         run.log({"loss": 2.1, "lr": 1e-4}, step=1, epoch=0)
 
-        records = _read_jsonl(tmp_path / "r" / "train.jsonl")
+        records = _read_jsonl(run.dir / "train.jsonl")
         assert len(records) == 2
         assert records[0]["step"] == 0
         assert records[1]["loss"] == 2.1
@@ -127,7 +144,7 @@ class TestLog:
         run = runlog.init(dir=str(tmp_path / "r"), config={})
         run.log({"loss": 1.0}, step=5, epoch=1)
 
-        rec = _read_jsonl(tmp_path / "r" / "train.jsonl")[0]
+        rec = _read_jsonl(run.dir / "train.jsonl")[0]
         assert rec["step"] == 5
         assert rec["epoch"] == 1
         assert "wall_time" in rec
@@ -139,8 +156,8 @@ class TestLog:
         run = runlog.init(dir=str(tmp_path / "r"), config={})
         run.log({"rgb.psnr": 25.0, "rgb.ssim": 0.91}, step=100, epoch=1, mode="val")
 
-        assert not (tmp_path / "r" / "train.jsonl").exists()
-        records = _read_jsonl(tmp_path / "r" / "val.jsonl")
+        assert not (run.dir / "train.jsonl").exists()
+        records = _read_jsonl(run.dir / "val.jsonl")
         assert len(records) == 1
         assert records[0]["rgb.psnr"] == 25.0
         run.finish()
@@ -149,7 +166,7 @@ class TestLog:
         run = runlog.init(dir=str(tmp_path / "r"), config={})
         run.log({"metric": 1.0}, step=0, epoch=0, mode="val")
 
-        rec = _read_jsonl(tmp_path / "r" / "val.jsonl")[0]
+        rec = _read_jsonl(run.dir / "val.jsonl")[0]
         assert "elapsed_sec" not in rec
         run.finish()
 
@@ -158,7 +175,7 @@ class TestLog:
         run = runlog.init(dir=str(tmp_path / "r"), config={})
         run.log({"custom_metric_xyz": 42, "another.nested.key": 0.5}, step=0, epoch=0)
 
-        rec = _read_jsonl(tmp_path / "r" / "train.jsonl")[0]
+        rec = _read_jsonl(run.dir / "train.jsonl")[0]
         assert rec["custom_metric_xyz"] == 42
         assert rec["another.nested.key"] == 0.5
         run.finish()
@@ -168,7 +185,7 @@ class TestLog:
         run = runlog.init(dir=str(tmp_path / "r"), config={})
         run.log({"loss": np.float32(1.5), "n": np.int64(10)}, step=0, epoch=0)
 
-        rec = _read_jsonl(tmp_path / "r" / "train.jsonl")[0]
+        rec = _read_jsonl(run.dir / "train.jsonl")[0]
         assert isinstance(rec["loss"], float)
         assert isinstance(rec["n"], int)
         run.finish()
@@ -193,7 +210,7 @@ class TestSaveOutputsFormatInference:
         arr = np.random.randint(0, 255, (32, 32, 3), dtype=np.uint8)
         run.save_outputs(epoch=0, step=0, rgb=dict(pred=arr))
 
-        f = self._single_file(tmp_path / "r" / "outputs" / "epoch_0_step_0" / "rgb" / "pred")
+        f = self._single_file(run.dir / "outputs" / "epoch_0_step_0" / "rgb" / "pred")
         assert f.suffix == ".png"
         img = Image.open(f)
         assert img.size == (32, 32)
@@ -205,7 +222,7 @@ class TestSaveOutputsFormatInference:
         arr = np.random.randint(0, 255, (16, 16, 4), dtype=np.uint8)
         run.save_outputs(epoch=0, step=0, rgba=dict(pred=arr))
 
-        f = self._single_file(tmp_path / "r" / "outputs" / "epoch_0_step_0" / "rgba" / "pred")
+        f = self._single_file(run.dir / "outputs" / "epoch_0_step_0" / "rgba" / "pred")
         assert f.suffix == ".png"
         assert Image.open(f).mode == "RGBA"
         run.finish()
@@ -215,7 +232,7 @@ class TestSaveOutputsFormatInference:
         arr = np.random.randint(0, 255, (16, 16, 1), dtype=np.uint8)
         run.save_outputs(epoch=0, step=0, gray=dict(pred=arr))
 
-        f = self._single_file(tmp_path / "r" / "outputs" / "epoch_0_step_0" / "gray" / "pred")
+        f = self._single_file(run.dir / "outputs" / "epoch_0_step_0" / "gray" / "pred")
         assert f.suffix == ".png"
         assert Image.open(f).mode == "L"
         run.finish()
@@ -225,7 +242,7 @@ class TestSaveOutputsFormatInference:
         arr = np.random.randint(0, 255, (16, 16), dtype=np.uint8)
         run.save_outputs(epoch=0, step=0, mask=dict(pred=arr))
 
-        f = self._single_file(tmp_path / "r" / "outputs" / "epoch_0_step_0" / "mask" / "pred")
+        f = self._single_file(run.dir / "outputs" / "epoch_0_step_0" / "mask" / "pred")
         assert f.suffix == ".png"
         run.finish()
 
@@ -234,7 +251,7 @@ class TestSaveOutputsFormatInference:
         arr = np.random.rand(16, 16, 3).astype(np.float32)
         run.save_outputs(epoch=0, step=0, rgb=dict(pred=arr))
 
-        f = self._single_file(tmp_path / "r" / "outputs" / "epoch_0_step_0" / "rgb" / "pred")
+        f = self._single_file(run.dir / "outputs" / "epoch_0_step_0" / "rgb" / "pred")
         assert f.suffix == ".png"
         img = np.array(Image.open(f))
         # float [0,1] → uint8 [0,255]
@@ -248,7 +265,7 @@ class TestSaveOutputsFormatInference:
         arr = np.full((8, 8, 3), 1.5, dtype=np.float32)
         run.save_outputs(epoch=0, step=0, rgb=dict(pred=arr))
 
-        f = self._single_file(tmp_path / "r" / "outputs" / "epoch_0_step_0" / "rgb" / "pred")
+        f = self._single_file(run.dir / "outputs" / "epoch_0_step_0" / "rgb" / "pred")
         img = np.array(Image.open(f))
         assert (img == 255).all()
         run.finish()
@@ -261,7 +278,7 @@ class TestSaveOutputsFormatInference:
         depth = np.random.rand(32, 32).astype(np.float32)
         run.save_outputs(epoch=0, step=0, depth=dict(pred=depth))
 
-        f = self._single_file(tmp_path / "r" / "outputs" / "epoch_0_step_0" / "depth" / "pred")
+        f = self._single_file(run.dir / "outputs" / "epoch_0_step_0" / "depth" / "pred")
         assert f.suffix == ".npy"
         loaded = np.load(f)
         np.testing.assert_array_equal(loaded, depth)
@@ -272,7 +289,7 @@ class TestSaveOutputsFormatInference:
         arr = np.random.rand(16, 16)  # float64 by default
         run.save_outputs(epoch=0, step=0, field=dict(gt=arr))
 
-        f = self._single_file(tmp_path / "r" / "outputs" / "epoch_0_step_0" / "field" / "gt")
+        f = self._single_file(run.dir / "outputs" / "epoch_0_step_0" / "field" / "gt")
         assert f.suffix == ".npy"
         run.finish()
 
@@ -282,7 +299,7 @@ class TestSaveOutputsFormatInference:
         arr = np.random.rand(16, 16, 64).astype(np.float32)
         run.save_outputs(epoch=0, step=0, feat=dict(pred=arr))
 
-        f = self._single_file(tmp_path / "r" / "outputs" / "epoch_0_step_0" / "feat" / "pred")
+        f = self._single_file(run.dir / "outputs" / "epoch_0_step_0" / "feat" / "pred")
         assert f.suffix == ".npy"
         run.finish()
 
@@ -300,7 +317,7 @@ class TestSaveOutputsOverrides:
         arr = np.random.rand(16, 16).astype(np.float32)
         run.save_outputs(epoch=0, step=0, depth=dict(pred=arr))
 
-        f = list((tmp_path / "r" / "outputs" / "epoch_0_step_0" / "depth" / "pred").iterdir())[0]
+        f = list((run.dir / "outputs" / "epoch_0_step_0" / "depth" / "pred").iterdir())[0]
         assert f.suffix == ".npz"
         run.finish()
 
@@ -312,7 +329,7 @@ class TestSaveOutputsOverrides:
         arr = np.random.randint(0, 255, (16, 16, 3), dtype=np.uint8)
         run.save_outputs(epoch=0, step=0, rgb=dict(pred=arr))
 
-        f = list((tmp_path / "r" / "outputs" / "epoch_0_step_0" / "rgb" / "pred").iterdir())[0]
+        f = list((run.dir / "outputs" / "epoch_0_step_0" / "rgb" / "pred").iterdir())[0]
         assert f.suffix == ".npz"
         run.finish()
 
@@ -328,7 +345,7 @@ class TestSaveOutputsOverrides:
             rgb=dict(pred=arr, gt=arr),
         )
 
-        base = tmp_path / "r" / "outputs" / "epoch_0_step_0" / "rgb"
+        base = run.dir / "outputs" / "epoch_0_step_0" / "rgb"
         pred_f = list((base / "pred").iterdir())[0]
         gt_f = list((base / "gt").iterdir())[0]
         assert pred_f.suffix == ".npy"   # overridden
@@ -346,7 +363,7 @@ class TestSaveOutputsVariants:
         imgs = [np.random.randint(0, 255, (8, 8, 3), dtype=np.uint8) for _ in range(4)]
         run.save_outputs(epoch=0, step=0, rgb=dict(pred=imgs))
 
-        pred_dir = tmp_path / "r" / "outputs" / "epoch_0_step_0" / "rgb" / "pred"
+        pred_dir = run.dir / "outputs" / "epoch_0_step_0" / "rgb" / "pred"
         files = sorted(pred_dir.iterdir())
         assert len(files) == 4
         assert [f.name for f in files] == ["0000.png", "0001.png", "0002.png", "0003.png"]
@@ -357,7 +374,7 @@ class TestSaveOutputsVariants:
         batch = np.random.randint(0, 255, (3, 8, 8, 3), dtype=np.uint8)
         run.save_outputs(epoch=0, step=0, rgb=dict(pred=batch))
 
-        pred_dir = tmp_path / "r" / "outputs" / "epoch_0_step_0" / "rgb" / "pred"
+        pred_dir = run.dir / "outputs" / "epoch_0_step_0" / "rgb" / "pred"
         assert len(list(pred_dir.iterdir())) == 3
         run.finish()
 
@@ -370,7 +387,7 @@ class TestSaveOutputsVariants:
             depth=dict(aux=dict(transmission=t_map, attention=attn)),
         )
 
-        aux_base = tmp_path / "r" / "outputs" / "epoch_1_step_50" / "depth" / "aux"
+        aux_base = run.dir / "outputs" / "epoch_1_step_50" / "depth" / "aux"
         assert (aux_base / "transmission").is_dir()
         assert (aux_base / "attention").is_dir()
         assert list((aux_base / "transmission").iterdir())[0].suffix == ".npy"
@@ -381,7 +398,7 @@ class TestSaveOutputsVariants:
         arr = np.random.randint(0, 255, (8, 8, 3), dtype=np.uint8)
         run.save_outputs(epoch=0, step=0, rgb=dict(pred=arr, gt=None, input=None))
 
-        rgb_dir = tmp_path / "r" / "outputs" / "epoch_0_step_0" / "rgb"
+        rgb_dir = run.dir / "outputs" / "epoch_0_step_0" / "rgb"
         assert (rgb_dir / "pred").is_dir()
         assert not (rgb_dir / "gt").exists()
         assert not (rgb_dir / "input").exists()
@@ -392,7 +409,7 @@ class TestSaveOutputsVariants:
         arr = np.random.randint(0, 255, (8, 8, 3), dtype=np.uint8)
         run.save_outputs(epoch=0, step=0, rgb=dict(pred=arr), depth=None)
 
-        out_dir = tmp_path / "r" / "outputs" / "epoch_0_step_0"
+        out_dir = run.dir / "outputs" / "epoch_0_step_0"
         assert (out_dir / "rgb").is_dir()
         assert not (out_dir / "depth").exists()
         run.finish()
@@ -402,7 +419,7 @@ class TestSaveOutputsVariants:
         img = Image.fromarray(np.random.randint(0, 255, (8, 8, 3), dtype=np.uint8))
         run.save_outputs(epoch=0, step=0, rgb=dict(pred=img))
 
-        f = list((tmp_path / "r" / "outputs" / "epoch_0_step_0" / "rgb" / "pred").iterdir())[0]
+        f = list((run.dir / "outputs" / "epoch_0_step_0" / "rgb" / "pred").iterdir())[0]
         assert f.suffix == ".png"
         run.finish()
 
@@ -412,7 +429,7 @@ class TestSaveOutputsVariants:
         t = torch.randint(0, 255, (3, 32, 32), dtype=torch.uint8)
         run.save_outputs(epoch=0, step=0, rgb=dict(pred=t))
 
-        f = list((tmp_path / "r" / "outputs" / "epoch_0_step_0" / "rgb" / "pred").iterdir())[0]
+        f = list((run.dir / "outputs" / "epoch_0_step_0" / "rgb" / "pred").iterdir())[0]
         assert f.suffix == ".png"
         img = np.array(Image.open(f))
         assert img.shape == (32, 32, 3)
@@ -427,7 +444,7 @@ class TestSaveOutputsVariants:
         t = torch.randint(0, 255, (5, 3, 16, 16), dtype=torch.uint8)
         run.save_outputs(epoch=0, step=0, rgb=dict(pred=t))
 
-        pred_dir = tmp_path / "r" / "outputs" / "epoch_0_step_0" / "rgb" / "pred"
+        pred_dir = run.dir / "outputs" / "epoch_0_step_0" / "rgb" / "pred"
         assert len(list(pred_dir.iterdir())) == 5
         run.finish()
 
@@ -437,7 +454,7 @@ class TestSaveOutputsVariants:
         t = torch.rand(32, 32)
         run.save_outputs(epoch=0, step=0, depth=dict(pred=t))
 
-        f = list((tmp_path / "r" / "outputs" / "epoch_0_step_0" / "depth" / "pred").iterdir())[0]
+        f = list((run.dir / "outputs" / "epoch_0_step_0" / "depth" / "pred").iterdir())[0]
         assert f.suffix == ".npy"
         loaded = np.load(f)
         np.testing.assert_allclose(loaded, t.numpy(), atol=1e-6)
@@ -468,7 +485,7 @@ class TestSaveOutputsVariants:
         run = runlog.init(dir=str(tmp_path / "r"), config={})
         arr = np.zeros((4, 4, 3), dtype=np.uint8)
         path = run.save_outputs(epoch=0, step=0, rgb=dict(pred=arr))
-        assert path == tmp_path / "r" / "outputs" / "epoch_0_step_0"
+        assert path == run.dir / "outputs" / "epoch_0_step_0"
         run.finish()
 
 
@@ -482,7 +499,7 @@ class TestSaveCheckpoint:
         run = runlog.init(dir=str(tmp_path / "r"), config={})
         path = run.save_checkpoint(model, epoch=3)
 
-        assert path == tmp_path / "r" / "checkpoints" / "epoch_3.pt"
+        assert path == run.dir / "checkpoints" / "epoch_3.pt"
         assert path.exists()
         ckpt = torch.load(path, weights_only=False)
         assert "model" in ckpt
@@ -536,7 +553,7 @@ class TestLifecycle:
         run = runlog.init(dir=str(tmp_path / "r"), config={})
         run.finish()
 
-        meta = _read_json(tmp_path / "r" / "meta.json")
+        meta = _read_json(run.dir / "meta.json")
         assert meta["status"] == "completed"
         assert meta["end_time"] is not None
         assert meta["end_iso"] is not None
@@ -545,17 +562,17 @@ class TestLifecycle:
     def test_double_finish_is_noop(self, tmp_path):
         run = runlog.init(dir=str(tmp_path / "r"), config={})
         run.finish()
-        first_meta = _read_json(tmp_path / "r" / "meta.json")
+        first_meta = _read_json(run.dir / "meta.json")
 
         run.finish()  # second call should be harmless
-        second_meta = _read_json(tmp_path / "r" / "meta.json")
+        second_meta = _read_json(run.dir / "meta.json")
         assert first_meta == second_meta
 
     def test_context_manager_clean_exit(self, tmp_path):
         with runlog.init(dir=str(tmp_path / "r"), config={}) as run:
             run.log({"loss": 1.0}, step=0, epoch=0)
 
-        meta = _read_json(tmp_path / "r" / "meta.json")
+        meta = _read_json(run.dir / "meta.json")
         assert meta["status"] == "completed"
 
     def test_context_manager_crash_records_error(self, tmp_path):
@@ -563,7 +580,7 @@ class TestLifecycle:
             with runlog.init(dir=str(tmp_path / "r"), config={}) as run:
                 raise RuntimeError("training exploded")
 
-        meta = _read_json(tmp_path / "r" / "meta.json")
+        meta = _read_json(run.dir / "meta.json")
         assert meta["status"] == "crashed"
         assert "RuntimeError: training exploded" in meta["error"]
         assert "traceback" in meta
@@ -578,4 +595,5 @@ class TestLifecycle:
         run = runlog.init(dir=str(tmp_path / "r"), config={})
         r = repr(run)
         assert "status='running'" in r
+        assert run.run_id in r
         run.finish()

@@ -48,26 +48,30 @@ with runlog.init(dir="runs/exp02", config=cfg) as run:
 
 ## Directory structure
 
-Every run produces the following layout:
+Each `runlog.init(dir=...)` call creates a timestamped subdirectory under `{dir}/runs/`:
 
 ```
-{run_dir}/
-├── meta.json
-├── config.json
-├── train.jsonl
-├── val.jsonl
-├── checkpoints/
-│   └── epoch_{N}.pt
-└── outputs/
-    └── epoch_{N}_step_{M}/
-        └── {output_type}/
-            ├── pred/
-            ├── gt/
-            ├── input/
-            └── aux/
-                ├── transmission/
-                └── attention_maps/
+{dir}/
+└── runs/
+    └── 2025-01-28_15-30-42_a3f2/   ← auto-generated run ID
+        ├── meta.json
+        ├── config.json
+        ├── train.jsonl
+        ├── val.jsonl
+        ├── checkpoints/
+        │   └── epoch_{N}.pt
+        └── outputs/
+            └── epoch_{N}_step_{M}/
+                └── {output_type}/
+                    ├── pred/
+                    ├── gt/
+                    ├── input/
+                    └── aux/
+                        ├── transmission/
+                        └── attention_maps/
 ```
+
+The run ID and directory are available as `run.run_id` and `run.dir`.
 
 ## API reference
 
@@ -77,7 +81,7 @@ Creates the run directory and writes `meta.json` + `config.json`.
 
 | Parameter | Type | Description |
 |---|---|---|
-| `dir` | `str \| Path` | Root directory for this run. Created if missing. |
+| `dir` | `str \| Path` | Project directory. Each call creates a unique run under `{dir}/runs/{timestamp_id}/`. |
 | `config` | `dict \| str \| Path \| Namespace \| dataclass` | Hyperparameters. Paths to `.json` / `.yaml` files are loaded automatically. |
 | `meta` | `dict \| None` | Extra fields merged into `meta.json` (e.g. `{"tags": ["baseline"]}`). |
 | `output_formats` | `dict[str, str] \| None` | Override format inference (see [Format inference](#format-inference)). |
@@ -185,6 +189,7 @@ Auto-managed, not written to directly.
 
 ```json
 {
+  "run_id": "2025-01-28_15-30-42_a3f2",
   "status": "running | completed | crashed",
   "start_time": 1706400000.0,
   "start_iso": "2024-01-28T00:00:00",
