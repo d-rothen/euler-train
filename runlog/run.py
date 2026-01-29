@@ -13,6 +13,7 @@ from typing import Any
 
 from .serialization import append_jsonl, normalize_config, write_json
 from .outputs import save_output_tree
+from .slurm import get_slurm_info
 
 
 class Run:
@@ -57,6 +58,7 @@ class Run:
             "pid": os.getpid(),
             "python": sys.version.split()[0],
             "command": sys.argv,
+            "slurm": get_slurm_info(),
         }
         if meta:
             self._meta.update(meta)
