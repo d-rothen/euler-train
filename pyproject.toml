@@ -13,4 +13,3 @@ dependencies = ["numpy"]
 images = ["Pillow"]
 gpu = ["nvidia-ml-py"]
 dev = ["pytest", "Pillow", "torch", "nvidia-ml-py"]
-https://discord.com/invite/PZGPFnj4
