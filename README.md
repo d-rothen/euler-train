@@ -190,21 +190,32 @@ Auto-managed, not written to directly.
 ```json
 {
   "run_id": "2025-01-28_15-30-42_a3f2",
-  "status": "running | completed | crashed",
+  "status": "running | completed | crashed | interrupted",
   "start_time": 1706400000.0,
-  "start_iso": "2024-01-28T00:00:00",
+  "start_iso": "2025-01-28T15:30:42",
   "end_time": 1706403600.0,
-  "end_iso": "2024-01-28T01:00:00",
+  "end_iso": "2025-01-28T16:30:42",
   "duration_sec": 3600.0,
   "pid": 12345,
   "python": "3.11.5",
   "command": ["train.py", "--lr", "1e-4"],
+  "slurm": {
+    "job_id": "123456",
+    "job_name": "my_train_job",
+    "node": "gpu-node-01",
+    "partition": "gpu",
+    "gpus": "1",
+    "cpus": "8",
+    "array_task_id": "0"
+  },
   "error": "RuntimeError: CUDA OOM",
-  "traceback": "..."
+  "traceback": "Traceback (most recent call last):\n  ..."
 }
 ```
 
-`error` and `traceback` are only present when `status` is `"crashed"` (via context manager).
+- `end_time`, `end_iso`, `duration_sec` are `null` while `status` is `"running"`.
+- `slurm` is `null` when not running under SLURM.
+- `error` and `traceback` are only present when `status` is `"crashed"` (context manager / excepthook) or `"interrupted"` (SIGTERM/SIGINT).
 
 ## Dev
 

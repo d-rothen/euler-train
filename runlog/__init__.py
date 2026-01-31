@@ -1,4 +1,5 @@
 """runlog — lightweight file-based experiment logging."""
+from __future__ import annotations
 
 from .run import Run
 
