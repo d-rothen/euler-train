@@ -32,6 +32,11 @@ def _json_default(obj: Any) -> Any:
 # File I/O
 # ---------------------------------------------------------------------------
 
+def read_json(path: Path) -> dict:
+    with open(path) as f:
+        return json.load(f)
+
+
 def write_json(path: Path, data: dict) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     with open(path, "w") as f:

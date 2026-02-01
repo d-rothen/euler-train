@@ -11,7 +11,7 @@ import traceback
 from pathlib import Path
 from typing import Any
 
-from .serialization import append_jsonl, normalize_config, write_json
+from .serialization import append_jsonl, normalize_config, read_json, write_json
 from .outputs import save_output_tree
 from .slurm import get_slurm_info
 
@@ -29,9 +29,17 @@ class Run:
         meta: dict | None = None,
         output_formats: dict[str, str] | None = None,
         gpu_stats_every: int = 100,
+        run_id: str | None = None,
     ) -> None:
-        self.run_id: str = _generate_run_id()
+        resuming = run_id is not None
+        self.run_id: str = run_id if resuming else _generate_run_id()
         self.dir = Path(dir) / "runs" / self.run_id
+
+        if resuming and not self.dir.exists():
+            raise FileNotFoundError(
+                f"Cannot resume run {self.run_id!r}: "
+                f"directory {self.dir} does not exist"
+            )
         self.dir.mkdir(parents=True, exist_ok=True)
 
         self._output_formats: dict[str, str] = output_formats or {}
@@ -42,24 +50,40 @@ class Run:
         self._gpu_stats_every: int = gpu_stats_every
 
         # ── config ────────────────────────────────────────────────
-        config_dict = normalize_config(config)
-        write_json(self.dir / "config.json", config_dict)
-        self.config: dict = config_dict
+        if resuming and config is None:
+            config_path = self.dir / "config.json"
+            self.config: dict = read_json(config_path) if config_path.exists() else {}
+        else:
+            config_dict = normalize_config(config)
+            write_json(self.dir / "config.json", config_dict)
+            self.config: dict = config_dict
 
         # ── meta ──────────────────────────────────────────────────
-        self._meta: dict[str, Any] = {
-            "run_id": self.run_id,
-            "status": "running",
-            "start_time": self._start_time,
-            "start_iso": _isotime(self._start_time),
-            "end_time": None,
-            "end_iso": None,
-            "duration_sec": None,
-            "pid": os.getpid(),
-            "python": sys.version.split()[0],
-            "command": sys.argv,
-            "slurm": get_slurm_info(),
-        }
+        if resuming:
+            meta_path = self.dir / "meta.json"
+            self._meta: dict[str, Any] = (
+                read_json(meta_path) if meta_path.exists() else {}
+            )
+            self._meta.update(
+                status="running",
+                pid=os.getpid(),
+                python=sys.version.split()[0],
+                command=sys.argv,
+            )
+        else:
+            self._meta: dict[str, Any] = {
+                "run_id": self.run_id,
+                "status": "running",
+                "start_time": self._start_time,
+                "start_iso": _isotime(self._start_time),
+                "end_time": None,
+                "end_iso": None,
+                "duration_sec": None,
+                "pid": os.getpid(),
+                "python": sys.version.split()[0],
+                "command": sys.argv,
+                "slurm": get_slurm_info(),
+            }
         if meta:
             self._meta.update(meta)
         self._flush_meta()

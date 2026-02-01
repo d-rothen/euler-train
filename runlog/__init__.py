@@ -12,8 +12,9 @@ def init(
     config=None,
     meta: dict | None = None,
     output_formats: dict[str, str] | None = None,
+    run_id: str | None = None,
 ) -> Run:
-    """Create a new run and return the :class:`Run` handle.
+    """Create a new run — or resume an existing one — and return the handle.
 
     Parameters
     ----------
@@ -31,5 +32,13 @@ def init(
         (``"depth"``), a slot / aux name (``"transmission"``), or a
         dotted combination (``"depth.pred"``).  Values are ``"png"``,
         ``"npy"``, or ``"npz"``.
+    run_id:
+        If given, resume an existing run instead of creating a new one.
+        The run directory ``{dir}/runs/{run_id}/`` must already exist.
+        The existing ``config.json`` is loaded automatically (unless
+        *config* is explicitly provided to override it).
     """
-    return Run(dir=dir, config=config, meta=meta, output_formats=output_formats)
+    return Run(
+        dir=dir, config=config, meta=meta,
+        output_formats=output_formats, run_id=run_id,
+    )
