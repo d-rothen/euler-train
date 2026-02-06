@@ -42,9 +42,15 @@ def init(
     datasets:
         Optional mapping of split name to ``euler_loading.MultiModalDataset``
         instance (e.g. ``{"train": train_ds, "val": val_ds}``).  When
-        provided, each dataset's ``modality_paths()`` and
-        ``hierarchical_modality_paths()`` are logged into ``meta.json``
-        under ``datasets[split]``.
+        provided, each split is logged into ``meta.json`` under
+        ``datasets[split]`` with per-modality records:
+        ``path`` and inferred metadata (``used_as``, ``slot``,
+        ``modality_type``).  Hierarchical modalities also include
+        ``hierarchy_scope`` and ``applies_to``.  If a dataset implements
+        ``describe_for_runlog()``, that contract is used directly.
+        Otherwise inference prefers
+        ``ds-crawler`` config properties when available, then falls back to
+        naming-based heuristics.
     run_name:
         Optional human-readable name for the run.  Stored in ``meta.json``.
     """

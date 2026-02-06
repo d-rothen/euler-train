@@ -1,4 +1,4 @@
-"""Tests for the runlog package — one section per public endpoint."""
+"""Tests for the euler_train package — one section per public endpoint."""
 from __future__ import annotations
 
 import dataclasses
@@ -13,7 +13,7 @@ import pytest
 import torch
 from PIL import Image
 
-import runlog
+import euler_train
 
 # ═══════════════════════════════════════════════════════════════════════════
 #  Helpers
@@ -27,13 +27,52 @@ def _read_jsonl(path: Path) -> list[dict]:
     return [json.loads(line) for line in path.read_text().splitlines() if line.strip()]
 
 
+class _DummyModality:
+    def __init__(self, path: str) -> None:
+        self.path = path
+
+
+class _DummyDataset:
+    def __init__(
+        self,
+        modalities: dict[str, str],
+        hierarchical_modalities: dict[str, str] | None = None,
+        hierarchical_lookups: dict[str, dict[tuple[str, ...], list[dict]]] | None = None,
+    ) -> None:
+        self._modalities = {
+            name: _DummyModality(path) for name, path in modalities.items()
+        }
+        self._hierarchical_modalities = {
+            name: _DummyModality(path)
+            for name, path in (hierarchical_modalities or {}).items()
+        }
+        self._hierarchical_lookups = hierarchical_lookups or {}
+
+    def modality_paths(self) -> dict[str, str]:
+        return {name: mod.path for name, mod in self._modalities.items()}
+
+    def hierarchical_modality_paths(self) -> dict[str, str]:
+        return {
+            name: mod.path
+            for name, mod in self._hierarchical_modalities.items()
+        }
+
+
+class _DatasetWithRunlogDescription:
+    def __init__(self, description: dict) -> None:
+        self._description = description
+
+    def describe_for_runlog(self) -> dict:
+        return self._description
+
+
 # ═══════════════════════════════════════════════════════════════════════════
 #  init  /  config normalisation
 # ═══════════════════════════════════════════════════════════════════════════
 
 class TestInit:
     def test_creates_run_subdirectory(self, tmp_path):
-        run = runlog.init(dir=str(tmp_path / "proj"), config={"lr": 1e-3})
+        run = euler_train.init(dir=str(tmp_path / "proj"), config={"lr": 1e-3})
         run.finish()
 
         # run.dir should be {dir}/runs/{run_id}
@@ -43,19 +82,19 @@ class TestInit:
         assert (run.dir / "config.json").exists()
 
     def test_run_id_in_meta(self, tmp_path):
-        run = runlog.init(dir=str(tmp_path / "r"), config={})
+        run = euler_train.init(dir=str(tmp_path / "r"), config={})
         meta = _read_json(run.dir / "meta.json")
         assert meta["run_id"] == run.run_id
         run.finish()
 
     def test_config_from_dict(self, tmp_path):
-        run = runlog.init(dir=str(tmp_path / "r"), config={"lr": 0.01, "bs": 32})
+        run = euler_train.init(dir=str(tmp_path / "r"), config={"lr": 0.01, "bs": 32})
         cfg = _read_json(run.dir / "config.json")
         assert cfg == {"lr": 0.01, "bs": 32}
         run.finish()
 
     def test_config_none_writes_empty(self, tmp_path):
-        run = runlog.init(dir=str(tmp_path / "r"))
+        run = euler_train.init(dir=str(tmp_path / "r"))
         cfg = _read_json(run.dir / "config.json")
         assert cfg == {}
         run.finish()
@@ -64,7 +103,7 @@ class TestInit:
         cfg_file = tmp_path / "cfg.json"
         cfg_file.write_text(json.dumps({"arch": "resnet", "depth": 50}))
 
-        run = runlog.init(dir=str(tmp_path / "r"), config=str(cfg_file))
+        run = euler_train.init(dir=str(tmp_path / "r"), config=str(cfg_file))
         cfg = _read_json(run.dir / "config.json")
         assert cfg["arch"] == "resnet"
         assert cfg["depth"] == 50
@@ -72,7 +111,7 @@ class TestInit:
 
     def test_config_from_namespace(self, tmp_path):
         ns = Namespace(lr=1e-4, epochs=10)
-        run = runlog.init(dir=str(tmp_path / "r"), config=ns)
+        run = euler_train.init(dir=str(tmp_path / "r"), config=ns)
         cfg = _read_json(run.dir / "config.json")
         assert cfg == {"lr": 1e-4, "epochs": 10}
         run.finish()
@@ -83,17 +122,17 @@ class TestInit:
             lr: float = 1e-3
             arch: str = "unet"
 
-        run = runlog.init(dir=str(tmp_path / "r"), config=Cfg())
+        run = euler_train.init(dir=str(tmp_path / "r"), config=Cfg())
         cfg = _read_json(run.dir / "config.json")
         assert cfg == {"lr": 1e-3, "arch": "unet"}
         run.finish()
 
     def test_config_unsupported_type_raises(self, tmp_path):
         with pytest.raises(TypeError, match="Unsupported config type"):
-            runlog.init(dir=str(tmp_path / "r"), config=42)
+            euler_train.init(dir=str(tmp_path / "r"), config=42)
 
     def test_meta_initial_status_is_running(self, tmp_path):
-        run = runlog.init(dir=str(tmp_path / "r"), config={})
+        run = euler_train.init(dir=str(tmp_path / "r"), config={})
         meta = _read_json(run.dir / "meta.json")
         assert meta["status"] == "running"
         assert meta["start_time"] is not None
@@ -102,7 +141,7 @@ class TestInit:
         run.finish()
 
     def test_meta_custom_fields_merged(self, tmp_path):
-        run = runlog.init(
+        run = euler_train.init(
             dir=str(tmp_path / "r"), config={},
             meta={"description": "ablation A", "tags": ["v2", "fast"]},
         )
@@ -113,17 +152,274 @@ class TestInit:
         run.finish()
 
     def test_returns_run_object(self, tmp_path):
-        run = runlog.init(dir=str(tmp_path / "r"), config={})
-        assert isinstance(run, runlog.Run)
+        run = euler_train.init(dir=str(tmp_path / "r"), config={})
+        assert isinstance(run, euler_train.Run)
         run.finish()
 
     def test_multiple_inits_create_separate_runs(self, tmp_path):
-        run1 = runlog.init(dir=str(tmp_path / "r"), config={})
-        run2 = runlog.init(dir=str(tmp_path / "r"), config={})
+        run1 = euler_train.init(dir=str(tmp_path / "r"), config={})
+        run2 = euler_train.init(dir=str(tmp_path / "r"), config={})
         assert run1.dir != run2.dir
         assert run1.run_id != run2.run_id
         run1.finish()
         run2.finish()
+
+
+class TestDatasetMetadata:
+    def test_prefers_dataset_describe_for_runlog_contract(
+        self, tmp_path, monkeypatch
+    ):
+        import euler_train.run as run_module
+
+        def _should_not_call(_path):
+            raise AssertionError("fallback ds-crawler descriptor should not be used")
+
+        monkeypatch.setattr(
+            run_module,
+            "_read_ds_crawler_descriptor",
+            _should_not_call,
+        )
+
+        contract = {
+            "modalities": {
+                "hazy_rgb": {
+                    "path": "/datasets/hazy_rgb",
+                    "used_as": "input",
+                    "slot": "dehaze.input.rgb",
+                    "modality_type": "rgb",
+                }
+            },
+            "hierarchical_modalities": {
+                "camera_intrinsics": {
+                    "path": "/datasets/camera_intrinsics",
+                    "used_as": "condition",
+                    "slot": "dehaze.condition.camera_intrinsics",
+                    "hierarchy_scope": "scene_camera",
+                    "applies_to": ["hazy_rgb"],
+                }
+            },
+        }
+
+        ds = _DatasetWithRunlogDescription(contract)
+        run = euler_train.init(
+            dir=str(tmp_path / "r"),
+            config={},
+            datasets={"train": ds},
+        )
+        meta = _read_json(run.dir / "meta.json")
+        run.finish()
+
+        assert meta["datasets"]["train"] == contract
+
+    def test_logs_rich_dataset_metadata_from_ds_crawler_properties(
+        self, tmp_path, monkeypatch
+    ):
+        import euler_train.run as run_module
+
+        descriptors = {
+            "/datasets/hazy_rgb": {
+                "modality_type": "rgb",
+                "properties": {
+                    "euler_train": {
+                        "used_as": "input",
+                        "slot": "dehaze.input.rgb",
+                    }
+                },
+            },
+            "/datasets/clear_rgb": {
+                "modality_type": "rgb",
+                "properties": {
+                    "euler_train": {
+                        "used_as": "target",
+                        "slot": "dehaze.target.rgb",
+                    }
+                },
+            },
+            "/datasets/depth": {
+                "modality_type": "depth",
+                "properties": {
+                    "euler_train": {
+                        "used_as": "target",
+                        "slot": "dehaze.target.depth",
+                    }
+                },
+            },
+            "/datasets/camera_intrinsics": {
+                "properties": {
+                    "euler_train": {
+                        "used_as": "condition",
+                        "slot": "dehaze.condition.camera_intrinsics",
+                        "hierarchy_scope": "scene_camera",
+                    }
+                },
+            },
+        }
+
+        monkeypatch.setattr(
+            run_module,
+            "_read_ds_crawler_descriptor",
+            lambda path: descriptors.get(path, {}),
+        )
+
+        ds = _DummyDataset(
+            modalities={
+                "hazy_rgb": "/datasets/hazy_rgb",
+                "clear_rgb": "/datasets/clear_rgb",
+                "depth": "/datasets/depth",
+            },
+            hierarchical_modalities={
+                "camera_intrinsics": "/datasets/camera_intrinsics",
+            },
+        )
+
+        run = euler_train.init(
+            dir=str(tmp_path / "r"),
+            config={},
+            datasets={"train": ds},
+        )
+        meta = _read_json(run.dir / "meta.json")
+        run.finish()
+
+        assert meta["datasets"]["train"] == {
+            "modalities": {
+                "hazy_rgb": {
+                    "path": "/datasets/hazy_rgb",
+                    "used_as": "input",
+                    "slot": "dehaze.input.rgb",
+                    "modality_type": "rgb",
+                },
+                "clear_rgb": {
+                    "path": "/datasets/clear_rgb",
+                    "used_as": "target",
+                    "slot": "dehaze.target.rgb",
+                    "modality_type": "rgb",
+                },
+                "depth": {
+                    "path": "/datasets/depth",
+                    "used_as": "target",
+                    "slot": "dehaze.target.depth",
+                    "modality_type": "depth",
+                },
+            },
+            "hierarchical_modalities": {
+                "camera_intrinsics": {
+                    "path": "/datasets/camera_intrinsics",
+                    "used_as": "condition",
+                    "slot": "dehaze.condition.camera_intrinsics",
+                    "hierarchy_scope": "scene_camera",
+                    "applies_to": ["hazy_rgb", "clear_rgb", "depth"],
+                }
+            },
+        }
+
+    def test_prefers_euler_loading_namespace_over_euler_train(
+        self, tmp_path, monkeypatch
+    ):
+        import euler_train.run as run_module
+
+        descriptors = {
+            "/datasets/hazy_rgb": {
+                "modality_type": "rgb",
+                "properties": {
+                    "euler_train": {
+                        "used_as": "target",
+                        "slot": "legacy.target.rgb",
+                    },
+                    "euler_loading": {
+                        "used_as": "input",
+                        "slot": "dehaze.input.rgb",
+                        "modality_type": "rgb",
+                    },
+                },
+            },
+        }
+
+        monkeypatch.setattr(
+            run_module,
+            "_read_ds_crawler_descriptor",
+            lambda path: descriptors.get(path, {}),
+        )
+
+        ds = _DummyDataset(modalities={"hazy_rgb": "/datasets/hazy_rgb"})
+        run = euler_train.init(
+            dir=str(tmp_path / "r"),
+            config={},
+            datasets={"train": ds},
+        )
+        meta = _read_json(run.dir / "meta.json")
+        run.finish()
+
+        assert meta["datasets"]["train"] == {
+            "modalities": {
+                "hazy_rgb": {
+                    "path": "/datasets/hazy_rgb",
+                    "used_as": "input",
+                    "slot": "dehaze.input.rgb",
+                    "modality_type": "rgb",
+                }
+            },
+            "hierarchical_modalities": {},
+        }
+
+    def test_logs_heuristic_dataset_metadata_without_ds_crawler(
+        self, tmp_path, monkeypatch
+    ):
+        import euler_train.run as run_module
+
+        monkeypatch.setattr(
+            run_module,
+            "_read_ds_crawler_descriptor",
+            lambda path: {},
+        )
+
+        ds = _DummyDataset(
+            modalities={
+                "hazy_rgb": "/datasets/hazy_rgb",
+                "target_depth": "/datasets/target_depth",
+            },
+            hierarchical_modalities={
+                "camera_intrinsics": "/datasets/camera_intrinsics",
+            },
+            hierarchical_lookups={
+                "camera_intrinsics": {
+                    ("scene_0001", "camera_0"): [{"id": "intrinsics"}],
+                }
+            },
+        )
+
+        run = euler_train.init(
+            dir=str(tmp_path / "r"),
+            config={},
+            datasets={"train": ds},
+        )
+        meta = _read_json(run.dir / "meta.json")
+        run.finish()
+
+        assert meta["datasets"]["train"] == {
+            "modalities": {
+                "hazy_rgb": {
+                    "path": "/datasets/hazy_rgb",
+                    "used_as": "input",
+                    "slot": "input.rgb",
+                    "modality_type": "rgb",
+                },
+                "target_depth": {
+                    "path": "/datasets/target_depth",
+                    "used_as": "target",
+                    "slot": "target.depth",
+                    "modality_type": "depth",
+                },
+            },
+            "hierarchical_modalities": {
+                "camera_intrinsics": {
+                    "path": "/datasets/camera_intrinsics",
+                    "used_as": "condition",
+                    "slot": "condition.camera_intrinsics",
+                    "hierarchy_scope": "scene_camera",
+                    "applies_to": ["hazy_rgb", "target_depth"],
+                }
+            },
+        }
 
 
 # ═══════════════════════════════════════════════════════════════════════════
@@ -132,7 +428,7 @@ class TestInit:
 
 class TestLog:
     def test_train_log_creates_file_and_appends(self, tmp_path):
-        run = runlog.init(dir=str(tmp_path / "r"), config={})
+        run = euler_train.init(dir=str(tmp_path / "r"), config={})
         run.log({"loss": 2.3, "lr": 1e-4}, step=0, epoch=0)
         run.log({"loss": 2.1, "lr": 1e-4}, step=1, epoch=0)
 
@@ -143,7 +439,7 @@ class TestLog:
         run.finish()
 
     def test_train_log_has_required_fields(self, tmp_path):
-        run = runlog.init(dir=str(tmp_path / "r"), config={})
+        run = euler_train.init(dir=str(tmp_path / "r"), config={})
         run.log({"loss": 1.0}, step=5, epoch=1)
 
         rec = _read_jsonl(run.dir / "train.jsonl")[0]
@@ -155,7 +451,7 @@ class TestLog:
         run.finish()
 
     def test_val_log_writes_to_val_file(self, tmp_path):
-        run = runlog.init(dir=str(tmp_path / "r"), config={})
+        run = euler_train.init(dir=str(tmp_path / "r"), config={})
         run.log({"rgb.psnr": 25.0, "rgb.ssim": 0.91}, step=100, epoch=1, mode="val")
 
         assert not (run.dir / "train.jsonl").exists()
@@ -165,7 +461,7 @@ class TestLog:
         run.finish()
 
     def test_val_log_no_elapsed_sec(self, tmp_path):
-        run = runlog.init(dir=str(tmp_path / "r"), config={})
+        run = euler_train.init(dir=str(tmp_path / "r"), config={})
         run.log({"metric": 1.0}, step=0, epoch=0, mode="val")
 
         rec = _read_jsonl(run.dir / "val.jsonl")[0]
@@ -174,7 +470,7 @@ class TestLog:
 
     def test_log_dynamic_keys(self, tmp_path):
         """Caller can pass arbitrary metric names."""
-        run = runlog.init(dir=str(tmp_path / "r"), config={})
+        run = euler_train.init(dir=str(tmp_path / "r"), config={})
         run.log({"custom_metric_xyz": 42, "another.nested.key": 0.5}, step=0, epoch=0)
 
         rec = _read_jsonl(run.dir / "train.jsonl")[0]
@@ -184,7 +480,7 @@ class TestLog:
 
     def test_log_numpy_scalars_serialised(self, tmp_path):
         """numpy dtypes should be serialised to plain Python types."""
-        run = runlog.init(dir=str(tmp_path / "r"), config={})
+        run = euler_train.init(dir=str(tmp_path / "r"), config={})
         run.log({"loss": np.float32(1.5), "n": np.int64(10)}, step=0, epoch=0)
 
         rec = _read_jsonl(run.dir / "train.jsonl")[0]
@@ -208,7 +504,7 @@ class TestSaveOutputsFormatInference:
     # ---- images → .png ---------------------------------------------------
 
     def test_uint8_hwc3_saved_as_png(self, tmp_path):
-        run = runlog.init(dir=str(tmp_path / "r"), config={})
+        run = euler_train.init(dir=str(tmp_path / "r"), config={})
         arr = np.random.randint(0, 255, (32, 32, 3), dtype=np.uint8)
         run.save_outputs(epoch=0, step=0, rgb=dict(pred=arr))
 
@@ -220,7 +516,7 @@ class TestSaveOutputsFormatInference:
         run.finish()
 
     def test_uint8_hwc4_saved_as_rgba_png(self, tmp_path):
-        run = runlog.init(dir=str(tmp_path / "r"), config={})
+        run = euler_train.init(dir=str(tmp_path / "r"), config={})
         arr = np.random.randint(0, 255, (16, 16, 4), dtype=np.uint8)
         run.save_outputs(epoch=0, step=0, rgba=dict(pred=arr))
 
@@ -230,7 +526,7 @@ class TestSaveOutputsFormatInference:
         run.finish()
 
     def test_uint8_hwc1_saved_as_grayscale_png(self, tmp_path):
-        run = runlog.init(dir=str(tmp_path / "r"), config={})
+        run = euler_train.init(dir=str(tmp_path / "r"), config={})
         arr = np.random.randint(0, 255, (16, 16, 1), dtype=np.uint8)
         run.save_outputs(epoch=0, step=0, gray=dict(pred=arr))
 
@@ -240,7 +536,7 @@ class TestSaveOutputsFormatInference:
         run.finish()
 
     def test_uint8_hw_saved_as_grayscale_png(self, tmp_path):
-        run = runlog.init(dir=str(tmp_path / "r"), config={})
+        run = euler_train.init(dir=str(tmp_path / "r"), config={})
         arr = np.random.randint(0, 255, (16, 16), dtype=np.uint8)
         run.save_outputs(epoch=0, step=0, mask=dict(pred=arr))
 
@@ -249,7 +545,7 @@ class TestSaveOutputsFormatInference:
         run.finish()
 
     def test_float_hwc3_saved_as_png_scaled(self, tmp_path):
-        run = runlog.init(dir=str(tmp_path / "r"), config={})
+        run = euler_train.init(dir=str(tmp_path / "r"), config={})
         arr = np.random.rand(16, 16, 3).astype(np.float32)
         run.save_outputs(epoch=0, step=0, rgb=dict(pred=arr))
 
@@ -263,7 +559,7 @@ class TestSaveOutputsFormatInference:
 
     def test_float_hwc3_clips_oob_values(self, tmp_path):
         """Values outside [0,1] should be clipped, not wrap around."""
-        run = runlog.init(dir=str(tmp_path / "r"), config={})
+        run = euler_train.init(dir=str(tmp_path / "r"), config={})
         arr = np.full((8, 8, 3), 1.5, dtype=np.float32)
         run.save_outputs(epoch=0, step=0, rgb=dict(pred=arr))
 
@@ -276,7 +572,7 @@ class TestSaveOutputsFormatInference:
 
     def test_float32_hw_saved_as_npy(self, tmp_path):
         """A float HxW array (e.g. depth map) should default to .npy."""
-        run = runlog.init(dir=str(tmp_path / "r"), config={})
+        run = euler_train.init(dir=str(tmp_path / "r"), config={})
         depth = np.random.rand(32, 32).astype(np.float32)
         run.save_outputs(epoch=0, step=0, depth=dict(pred=depth))
 
@@ -287,7 +583,7 @@ class TestSaveOutputsFormatInference:
         run.finish()
 
     def test_float64_hw_saved_as_npy(self, tmp_path):
-        run = runlog.init(dir=str(tmp_path / "r"), config={})
+        run = euler_train.init(dir=str(tmp_path / "r"), config={})
         arr = np.random.rand(16, 16)  # float64 by default
         run.save_outputs(epoch=0, step=0, field=dict(gt=arr))
 
@@ -297,7 +593,7 @@ class TestSaveOutputsFormatInference:
 
     def test_high_channel_count_saved_as_npy(self, tmp_path):
         """HxWx64 is *not* image-like — should be .npy."""
-        run = runlog.init(dir=str(tmp_path / "r"), config={})
+        run = euler_train.init(dir=str(tmp_path / "r"), config={})
         arr = np.random.rand(16, 16, 64).astype(np.float32)
         run.save_outputs(epoch=0, step=0, feat=dict(pred=arr))
 
@@ -312,7 +608,7 @@ class TestSaveOutputsFormatInference:
 
 class TestSaveOutputsOverrides:
     def test_override_by_output_type(self, tmp_path):
-        run = runlog.init(
+        run = euler_train.init(
             dir=str(tmp_path / "r"), config={},
             output_formats={"depth": "npz"},
         )
@@ -324,7 +620,7 @@ class TestSaveOutputsOverrides:
         run.finish()
 
     def test_override_by_leaf_name(self, tmp_path):
-        run = runlog.init(
+        run = euler_train.init(
             dir=str(tmp_path / "r"), config={},
             output_formats={"pred": "npz"},
         )
@@ -337,7 +633,7 @@ class TestSaveOutputsOverrides:
 
     def test_override_specific_dotted_key(self, tmp_path):
         """'rgb.pred' override should only affect rgb/pred, not depth/pred."""
-        run = runlog.init(
+        run = euler_train.init(
             dir=str(tmp_path / "r"), config={},
             output_formats={"rgb.pred": "npy"},
         )
@@ -361,7 +657,7 @@ class TestSaveOutputsOverrides:
 
 class TestSaveOutputsVariants:
     def test_list_of_arrays_saved_individually(self, tmp_path):
-        run = runlog.init(dir=str(tmp_path / "r"), config={})
+        run = euler_train.init(dir=str(tmp_path / "r"), config={})
         imgs = [np.random.randint(0, 255, (8, 8, 3), dtype=np.uint8) for _ in range(4)]
         run.save_outputs(epoch=0, step=0, rgb=dict(pred=imgs))
 
@@ -372,7 +668,7 @@ class TestSaveOutputsVariants:
         run.finish()
 
     def test_4d_array_split_as_batch(self, tmp_path):
-        run = runlog.init(dir=str(tmp_path / "r"), config={})
+        run = euler_train.init(dir=str(tmp_path / "r"), config={})
         batch = np.random.randint(0, 255, (3, 8, 8, 3), dtype=np.uint8)
         run.save_outputs(epoch=0, step=0, rgb=dict(pred=batch))
 
@@ -381,7 +677,7 @@ class TestSaveOutputsVariants:
         run.finish()
 
     def test_aux_creates_named_subdirectories(self, tmp_path):
-        run = runlog.init(dir=str(tmp_path / "r"), config={})
+        run = euler_train.init(dir=str(tmp_path / "r"), config={})
         t_map = np.random.rand(16, 16).astype(np.float32)
         attn = np.random.rand(16, 16).astype(np.float32)
         run.save_outputs(
@@ -396,7 +692,7 @@ class TestSaveOutputsVariants:
         run.finish()
 
     def test_none_slots_are_skipped(self, tmp_path):
-        run = runlog.init(dir=str(tmp_path / "r"), config={})
+        run = euler_train.init(dir=str(tmp_path / "r"), config={})
         arr = np.random.randint(0, 255, (8, 8, 3), dtype=np.uint8)
         run.save_outputs(epoch=0, step=0, rgb=dict(pred=arr, gt=None, input=None))
 
@@ -407,7 +703,7 @@ class TestSaveOutputsVariants:
         run.finish()
 
     def test_none_output_type_skipped(self, tmp_path):
-        run = runlog.init(dir=str(tmp_path / "r"), config={})
+        run = euler_train.init(dir=str(tmp_path / "r"), config={})
         arr = np.random.randint(0, 255, (8, 8, 3), dtype=np.uint8)
         run.save_outputs(epoch=0, step=0, rgb=dict(pred=arr), depth=None)
 
@@ -417,7 +713,7 @@ class TestSaveOutputsVariants:
         run.finish()
 
     def test_pil_image_saved_as_png(self, tmp_path):
-        run = runlog.init(dir=str(tmp_path / "r"), config={})
+        run = euler_train.init(dir=str(tmp_path / "r"), config={})
         img = Image.fromarray(np.random.randint(0, 255, (8, 8, 3), dtype=np.uint8))
         run.save_outputs(epoch=0, step=0, rgb=dict(pred=img))
 
@@ -427,7 +723,7 @@ class TestSaveOutputsVariants:
 
     def test_torch_tensor_chw_transposed_and_saved(self, tmp_path):
         """A (C,H,W) torch tensor should be transposed to (H,W,C) and saved."""
-        run = runlog.init(dir=str(tmp_path / "r"), config={})
+        run = euler_train.init(dir=str(tmp_path / "r"), config={})
         t = torch.randint(0, 255, (3, 32, 32), dtype=torch.uint8)
         run.save_outputs(epoch=0, step=0, rgb=dict(pred=t))
 
@@ -442,7 +738,7 @@ class TestSaveOutputsVariants:
 
     def test_torch_tensor_bchw_becomes_batch(self, tmp_path):
         """A (B,C,H,W) torch tensor should produce B separate files."""
-        run = runlog.init(dir=str(tmp_path / "r"), config={})
+        run = euler_train.init(dir=str(tmp_path / "r"), config={})
         t = torch.randint(0, 255, (5, 3, 16, 16), dtype=torch.uint8)
         run.save_outputs(epoch=0, step=0, rgb=dict(pred=t))
 
@@ -452,7 +748,7 @@ class TestSaveOutputsVariants:
 
     def test_torch_float_tensor_saved_as_npy(self, tmp_path):
         """A 2-D float torch tensor (depth-like) should default to .npy."""
-        run = runlog.init(dir=str(tmp_path / "r"), config={})
+        run = euler_train.init(dir=str(tmp_path / "r"), config={})
         t = torch.rand(32, 32)
         run.save_outputs(epoch=0, step=0, depth=dict(pred=t))
 
@@ -463,28 +759,28 @@ class TestSaveOutputsVariants:
         run.finish()
 
     def test_directory_naming_epoch_only(self, tmp_path):
-        run = runlog.init(dir=str(tmp_path / "r"), config={})
+        run = euler_train.init(dir=str(tmp_path / "r"), config={})
         arr = np.zeros((4, 4, 3), dtype=np.uint8)
         path = run.save_outputs(epoch=3, rgb=dict(pred=arr))
         assert path.name == "epoch_3"
         run.finish()
 
     def test_directory_naming_step_only(self, tmp_path):
-        run = runlog.init(dir=str(tmp_path / "r"), config={})
+        run = euler_train.init(dir=str(tmp_path / "r"), config={})
         arr = np.zeros((4, 4, 3), dtype=np.uint8)
         path = run.save_outputs(step=999, rgb=dict(pred=arr))
         assert path.name == "step_999"
         run.finish()
 
     def test_directory_naming_both(self, tmp_path):
-        run = runlog.init(dir=str(tmp_path / "r"), config={})
+        run = euler_train.init(dir=str(tmp_path / "r"), config={})
         arr = np.zeros((4, 4, 3), dtype=np.uint8)
         path = run.save_outputs(epoch=2, step=500, rgb=dict(pred=arr))
         assert path.name == "epoch_2_step_500"
         run.finish()
 
     def test_returns_output_base_path(self, tmp_path):
-        run = runlog.init(dir=str(tmp_path / "r"), config={})
+        run = euler_train.init(dir=str(tmp_path / "r"), config={})
         arr = np.zeros((4, 4, 3), dtype=np.uint8)
         path = run.save_outputs(epoch=0, step=0, rgb=dict(pred=arr))
         assert path == run.dir / "outputs" / "epoch_0_step_0"
@@ -498,7 +794,7 @@ class TestSaveOutputsVariants:
 class TestSaveCheckpoint:
     def test_saves_model_state_dict(self, tmp_path):
         model = torch.nn.Linear(4, 2)
-        run = runlog.init(dir=str(tmp_path / "r"), config={})
+        run = euler_train.init(dir=str(tmp_path / "r"), config={})
         path = run.save_checkpoint(model, epoch=3)
 
         assert path == run.dir / "checkpoints" / "epoch_3.pt"
@@ -514,7 +810,7 @@ class TestSaveCheckpoint:
 
     def test_saves_raw_dict_as_model(self, tmp_path):
         raw = {"weight": torch.randn(3, 3)}
-        run = runlog.init(dir=str(tmp_path / "r"), config={})
+        run = euler_train.init(dir=str(tmp_path / "r"), config={})
         path = run.save_checkpoint(raw, epoch=0)
 
         ckpt = torch.load(path, weights_only=False)
@@ -527,7 +823,7 @@ class TestSaveCheckpoint:
         model = torch.nn.Linear(4, 2)
         opt = torch.optim.SGD(model.parameters(), lr=0.01)
 
-        run = runlog.init(dir=str(tmp_path / "r"), config={})
+        run = euler_train.init(dir=str(tmp_path / "r"), config={})
         path = run.save_checkpoint(model, epoch=1, optimizer=opt)
 
         ckpt = torch.load(path, weights_only=False)
@@ -537,7 +833,7 @@ class TestSaveCheckpoint:
 
     def test_saves_extra_kwargs(self, tmp_path):
         model = torch.nn.Linear(4, 2)
-        run = runlog.init(dir=str(tmp_path / "r"), config={})
+        run = euler_train.init(dir=str(tmp_path / "r"), config={})
         path = run.save_checkpoint(model, epoch=5, best_loss=0.42, global_step=9999)
 
         ckpt = torch.load(path, weights_only=False)
@@ -552,7 +848,7 @@ class TestSaveCheckpoint:
 
 class TestLifecycle:
     def test_finish_writes_completed(self, tmp_path):
-        run = runlog.init(dir=str(tmp_path / "r"), config={})
+        run = euler_train.init(dir=str(tmp_path / "r"), config={})
         run.finish()
 
         meta = _read_json(run.dir / "meta.json")
@@ -562,7 +858,7 @@ class TestLifecycle:
         assert meta["duration_sec"] >= 0
 
     def test_double_finish_is_noop(self, tmp_path):
-        run = runlog.init(dir=str(tmp_path / "r"), config={})
+        run = euler_train.init(dir=str(tmp_path / "r"), config={})
         run.finish()
         first_meta = _read_json(run.dir / "meta.json")
 
@@ -571,7 +867,7 @@ class TestLifecycle:
         assert first_meta == second_meta
 
     def test_context_manager_clean_exit(self, tmp_path):
-        with runlog.init(dir=str(tmp_path / "r"), config={}) as run:
+        with euler_train.init(dir=str(tmp_path / "r"), config={}) as run:
             run.log({"loss": 1.0}, step=0, epoch=0)
 
         meta = _read_json(run.dir / "meta.json")
@@ -579,7 +875,7 @@ class TestLifecycle:
 
     def test_context_manager_crash_records_error(self, tmp_path):
         with pytest.raises(RuntimeError):
-            with runlog.init(dir=str(tmp_path / "r"), config={}) as run:
+            with euler_train.init(dir=str(tmp_path / "r"), config={}) as run:
                 raise RuntimeError("training exploded")
 
         meta = _read_json(run.dir / "meta.json")
@@ -590,11 +886,11 @@ class TestLifecycle:
 
     def test_context_manager_does_not_suppress_exception(self, tmp_path):
         with pytest.raises(ValueError, match="boom"):
-            with runlog.init(dir=str(tmp_path / "r"), config={}):
+            with euler_train.init(dir=str(tmp_path / "r"), config={}):
                 raise ValueError("boom")
 
     def test_repr(self, tmp_path):
-        run = runlog.init(dir=str(tmp_path / "r"), config={})
+        run = euler_train.init(dir=str(tmp_path / "r"), config={})
         r = repr(run)
         assert "status='running'" in r
         assert run.run_id in r
@@ -608,7 +904,7 @@ class TestLifecycle:
 class TestInterruptHandling:
     def test_atexit_marks_completed(self, tmp_path):
         """Calling _on_exit (the atexit callback) marks status=completed."""
-        run = runlog.init(dir=str(tmp_path / "r"), config={})
+        run = euler_train.init(dir=str(tmp_path / "r"), config={})
         run._on_exit()
 
         meta = _read_json(run.dir / "meta.json")
@@ -616,7 +912,7 @@ class TestInterruptHandling:
         assert meta["end_time"] is not None
 
     def test_atexit_noop_if_already_finished(self, tmp_path):
-        run = runlog.init(dir=str(tmp_path / "r"), config={})
+        run = euler_train.init(dir=str(tmp_path / "r"), config={})
         run.finish()
         first_meta = _read_json(run.dir / "meta.json")
 
@@ -625,7 +921,7 @@ class TestInterruptHandling:
         assert first_meta == second_meta
 
     def test_signal_marks_interrupted(self, tmp_path):
-        run = runlog.init(dir=str(tmp_path / "r"), config={})
+        run = euler_train.init(dir=str(tmp_path / "r"), config={})
         with pytest.raises(SystemExit) as exc_info:
             run._on_signal(signal.SIGTERM, None)
 
@@ -636,7 +932,7 @@ class TestInterruptHandling:
         assert meta["end_time"] is not None
 
     def test_signal_sigint_records_name(self, tmp_path):
-        run = runlog.init(dir=str(tmp_path / "r"), config={})
+        run = euler_train.init(dir=str(tmp_path / "r"), config={})
         with pytest.raises(SystemExit):
             run._on_signal(signal.SIGINT, None)
 
@@ -645,7 +941,7 @@ class TestInterruptHandling:
         assert "SIGINT" in meta["error"]
 
     def test_excepthook_marks_crashed(self, tmp_path):
-        run = runlog.init(dir=str(tmp_path / "r"), config={})
+        run = euler_train.init(dir=str(tmp_path / "r"), config={})
         # Swap original hook with a no-op so it doesn't print during tests
         run._original_excepthook = lambda *args: None
 
@@ -662,7 +958,7 @@ class TestInterruptHandling:
 
     def test_hooks_cleaned_up_after_finish(self, tmp_path):
         original_excepthook = sys.excepthook
-        run = runlog.init(dir=str(tmp_path / "r"), config={})
+        run = euler_train.init(dir=str(tmp_path / "r"), config={})
         # After init, our hook is installed (different from original)
         assert sys.excepthook is not original_excepthook
 
@@ -673,7 +969,7 @@ class TestInterruptHandling:
     def test_signal_inside_context_manager_records_interrupted(self, tmp_path):
         """Signal during with-block should record 'interrupted', not 'crashed'."""
         with pytest.raises(SystemExit):
-            with runlog.init(dir=str(tmp_path / "r"), config={}) as run:
+            with euler_train.init(dir=str(tmp_path / "r"), config={}) as run:
                 run._on_signal(signal.SIGINT, None)
 
         meta = _read_json(run.dir / "meta.json")

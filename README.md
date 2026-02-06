@@ -1,4 +1,4 @@
-# runlog
+# euler_train
 
 Lightweight, file-based experiment logger for PyTorch. No servers, no accounts — just structured files on disk.
 
@@ -14,9 +14,9 @@ pip install -e ".[images]"
 ## Quick start
 
 ```python
-import runlog
+import euler_train
 
-run = runlog.init(
+run = euler_train.init(
     dir="runs/experiment_01",
     config={"lr": 1e-4, "arch": "unet", "epochs": 50},
 )
@@ -42,13 +42,13 @@ run.finish()
 Use the context manager to auto-finish and capture crashes:
 
 ```python
-with runlog.init(dir="runs/exp02", config=cfg) as run:
+with euler_train.init(dir="runs/exp02", config=cfg) as run:
     ...  # if an exception is raised, meta.json records status="crashed" + traceback
 ```
 
 ## Directory structure
 
-Each `runlog.init(dir=...)` call creates a timestamped subdirectory under `{dir}/runs/`:
+Each `euler_train.init(dir=...)` call creates a timestamped subdirectory under `{dir}/runs/`:
 
 ```
 {dir}/
@@ -75,7 +75,7 @@ The run ID and directory are available as `run.run_id` and `run.dir`.
 
 ## API reference
 
-### `runlog.init(dir, config=None, meta=None, output_formats=None) → Run`
+### `euler_train.init(dir, config=None, meta=None, output_formats=None, run_id=None, datasets=None, run_name=None) → Run`
 
 Creates the run directory and writes `meta.json` + `config.json`.
 
@@ -85,6 +85,9 @@ Creates the run directory and writes `meta.json` + `config.json`.
 | `config` | `dict \| str \| Path \| Namespace \| dataclass` | Hyperparameters. Paths to `.json` / `.yaml` files are loaded automatically. |
 | `meta` | `dict \| None` | Extra fields merged into `meta.json` (e.g. `{"tags": ["baseline"]}`). |
 | `output_formats` | `dict[str, str] \| None` | Override format inference (see [Format inference](#format-inference)). |
+| `run_id` | `str \| None` | Resume an existing run at `{dir}/runs/{run_id}` instead of creating a new one. |
+| `datasets` | `dict[str, Any] \| None` | Optional split → dataset map. If a dataset exposes `describe_for_runlog()`, that contract is used directly; otherwise euler_train infers structured modality metadata (`path`, `used_as`, `slot`, `modality_type`, and hierarchical fields), resolving fixed namespaced properties from `properties.euler_loading` and `properties.euler_train` before heuristics. |
+| `run_name` | `str \| None` | Optional human-readable run label stored in `meta.json`. |
 
 ---
 
@@ -170,7 +173,7 @@ Arrays are saved as `.png` or `.npy` based on shape and dtype:
 Pass `output_formats` at init. Keys are resolved most-specific-first:
 
 ```python
-run = runlog.init(
+run = euler_train.init(
     dir="runs/exp",
     config=cfg,
     output_formats={
@@ -190,6 +193,7 @@ Auto-managed, not written to directly.
 ```json
 {
   "run_id": "2025-01-28_15-30-42_a3f2",
+  "run_name": "baseline_dehaze",
   "status": "running | completed | crashed | interrupted",
   "start_time": 1706400000.0,
   "start_iso": "2025-01-28T15:30:42",
@@ -208,6 +212,27 @@ Auto-managed, not written to directly.
     "cpus": "8",
     "array_task_id": "0"
   },
+  "datasets": {
+    "train": {
+      "modalities": {
+        "hazy_rgb": {
+          "path": "/cluster/work/.../vkitti_rgb_hazy",
+          "used_as": "input",
+          "slot": "dehaze.input.rgb",
+          "modality_type": "rgb"
+        }
+      },
+      "hierarchical_modalities": {
+        "camera_intrinsics": {
+          "path": "/cluster/work/.../vkitti_intrinsics",
+          "used_as": "condition",
+          "slot": "dehaze.condition.camera_intrinsics",
+          "hierarchy_scope": "scene_camera",
+          "applies_to": ["hazy_rgb"]
+        }
+      }
+    }
+  },
   "error": "RuntimeError: CUDA OOM",
   "traceback": "Traceback (most recent call last):\n  ..."
 }
@@ -215,6 +240,7 @@ Auto-managed, not written to directly.
 
 - `end_time`, `end_iso`, `duration_sec` are `null` while `status` is `"running"`.
 - `slurm` is `null` when not running under SLURM.
+- `datasets` is only present when `datasets=...` is passed to `euler_train.init`.
 - `error` and `traceback` are only present when `status` is `"crashed"` (context manager / excepthook) or `"interrupted"` (SIGTERM/SIGINT).
 
 ## Dev
