@@ -31,6 +31,7 @@ class Run:
         gpu_stats_every: int = 100,
         run_id: str | None = None,
         datasets: dict[str, Any] | None = None,
+        run_name: str | None = None,
     ) -> None:
         resuming = run_id is not None
         self.run_id: str = run_id if resuming else _generate_run_id()
@@ -49,6 +50,7 @@ class Run:
         self._gpu_handle: Any | None = None
         self._gpu_available: bool | None = None  # None = not yet probed
         self._gpu_stats_every: int = gpu_stats_every
+        self.run_name: str | None = run_name
 
         # ── config ────────────────────────────────────────────────
         if resuming:
@@ -58,18 +60,6 @@ class Run:
                 self.config.update(normalize_config(config))
         else:
             self.config: dict = normalize_config(config)
-
-        # ── datasets (optional euler_loading integration) ────────
-        if datasets is not None:
-            existing = self.config.get("datasets", {})
-            existing.update({
-                split: {
-                    "modalities": ds.modality_paths(),
-                    "hierarchical_modalities": ds.hierarchical_modality_paths(),
-                }
-                for split, ds in datasets.items()
-            })
-            self.config["datasets"] = existing
 
         write_json(self.dir / "config.json", self.config)
 
@@ -88,6 +78,7 @@ class Run:
         else:
             self._meta: dict[str, Any] = {
                 "run_id": self.run_id,
+                "run_name": self.run_name,
                 "status": "running",
                 "start_time": self._start_time,
                 "start_iso": _isotime(self._start_time),
@@ -101,6 +92,18 @@ class Run:
             }
         if meta:
             self._meta.update(meta)
+
+        # ── datasets (optional euler_loading integration) ────────
+        if datasets is not None:
+            existing = self._meta.get("datasets", {})
+            existing.update({
+                split: {
+                    "modalities": ds.modality_paths(),
+                    "hierarchical_modalities": ds.hierarchical_modality_paths(),
+                }
+                for split, ds in datasets.items()
+            })
+            self._meta["datasets"] = existing
         self._flush_meta()
         self._setup_hooks()
 

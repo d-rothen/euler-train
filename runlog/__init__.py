@@ -14,6 +14,7 @@ def init(
     output_formats: dict[str, str] | None = None,
     run_id: str | None = None,
     datasets: dict | None = None,
+    run_name: str | None = None,
 ) -> Run:
     """Create a new run — or resume an existing one — and return the handle.
 
@@ -42,11 +43,13 @@ def init(
         Optional mapping of split name to ``euler_loading.MultiModalDataset``
         instance (e.g. ``{"train": train_ds, "val": val_ds}``).  When
         provided, each dataset's ``modality_paths()`` and
-        ``hierarchical_modality_paths()`` are logged into ``config.json``
+        ``hierarchical_modality_paths()`` are logged into ``meta.json``
         under ``datasets[split]``.
+    run_name:
+        Optional human-readable name for the run.  Stored in ``meta.json``.
     """
     return Run(
         dir=dir, config=config, meta=meta,
         output_formats=output_formats, run_id=run_id,
-        datasets=datasets,
+        datasets=datasets, run_name=run_name,
     )
