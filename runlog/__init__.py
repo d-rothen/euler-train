@@ -13,6 +13,7 @@ def init(
     meta: dict | None = None,
     output_formats: dict[str, str] | None = None,
     run_id: str | None = None,
+    dataset=None,
 ) -> Run:
     """Create a new run — or resume an existing one — and return the handle.
 
@@ -37,8 +38,13 @@ def init(
         The run directory ``{dir}/runs/{run_id}/`` must already exist.
         The existing ``config.json`` is loaded automatically (unless
         *config* is explicitly provided to override it).
+    dataset:
+        Optional ``euler_loading.MultiModalDataset`` instance.  When
+        provided, ``modality_paths()`` and ``hierarchical_modality_paths()``
+        are logged into ``config.json``.
     """
     return Run(
         dir=dir, config=config, meta=meta,
         output_formats=output_formats, run_id=run_id,
+        dataset=dataset,
     )

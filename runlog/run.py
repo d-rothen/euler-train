@@ -30,6 +30,7 @@ class Run:
         output_formats: dict[str, str] | None = None,
         gpu_stats_every: int = 100,
         run_id: str | None = None,
+        dataset: Any = None,
     ) -> None:
         resuming = run_id is not None
         self.run_id: str = run_id if resuming else _generate_run_id()
@@ -57,6 +58,12 @@ class Run:
             config_dict = normalize_config(config)
             write_json(self.dir / "config.json", config_dict)
             self.config: dict = config_dict
+
+        # ── dataset (optional euler_loading integration) ─────────
+        if dataset is not None:
+            self.config["modalities"] = dataset.modality_paths()
+            self.config["hierarchical_modalities"] = dataset.hierarchical_modality_paths()
+            write_json(self.dir / "config.json", self.config)
 
         # ── meta ──────────────────────────────────────────────────
         if resuming:
