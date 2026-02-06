@@ -30,7 +30,7 @@ class Run:
         output_formats: dict[str, str] | None = None,
         gpu_stats_every: int = 100,
         run_id: str | None = None,
-        dataset: Any = None,
+        datasets: dict[str, Any] | None = None,
     ) -> None:
         resuming = run_id is not None
         self.run_id: str = run_id if resuming else _generate_run_id()
@@ -51,19 +51,27 @@ class Run:
         self._gpu_stats_every: int = gpu_stats_every
 
         # ── config ────────────────────────────────────────────────
-        if resuming and config is None:
+        if resuming:
             config_path = self.dir / "config.json"
             self.config: dict = read_json(config_path) if config_path.exists() else {}
+            if config is not None:
+                self.config.update(normalize_config(config))
         else:
-            config_dict = normalize_config(config)
-            write_json(self.dir / "config.json", config_dict)
-            self.config: dict = config_dict
+            self.config: dict = normalize_config(config)
 
-        # ── dataset (optional euler_loading integration) ─────────
-        if dataset is not None:
-            self.config["modalities"] = dataset.modality_paths()
-            self.config["hierarchical_modalities"] = dataset.hierarchical_modality_paths()
-            write_json(self.dir / "config.json", self.config)
+        # ── datasets (optional euler_loading integration) ────────
+        if datasets is not None:
+            existing = self.config.get("datasets", {})
+            existing.update({
+                split: {
+                    "modalities": ds.modality_paths(),
+                    "hierarchical_modalities": ds.hierarchical_modality_paths(),
+                }
+                for split, ds in datasets.items()
+            })
+            self.config["datasets"] = existing
+
+        write_json(self.dir / "config.json", self.config)
 
         # ── meta ──────────────────────────────────────────────────
         if resuming:
