@@ -15,6 +15,7 @@ def init(
     run_id: str | None = None,
     datasets: dict | None = None,
     run_name: str | None = None,
+    evaluations: dict[str, dict] | None = None,
 ) -> Run:
     """Create a new run — or resume an existing one — and return the handle.
 
@@ -53,9 +54,16 @@ def init(
         naming-based heuristics.
     run_name:
         Optional human-readable name for the run.  Stored in ``meta.json``.
+    evaluations:
+        Optional mapping of evaluation key to evaluation entry.  Each
+        entry may contain ``datasets`` (same dataset objects accepted by
+        *datasets*), ``name``, ``status``, ``checkpoint``, and
+        ``metadata``.  Typically used when resuming a run (via *run_id*)
+        for evaluation.  See also :meth:`Run.add_evaluation`.
     """
     return Run(
         dir=dir, config=config, meta=meta,
         output_formats=output_formats, run_id=run_id,
         datasets=datasets, run_name=run_name,
+        evaluations=evaluations,
     )

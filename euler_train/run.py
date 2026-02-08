@@ -36,6 +36,7 @@ class Run:
         run_id: str | None = None,
         datasets: dict[str, Any] | None = None,
         run_name: str | None = None,
+        evaluations: dict[str, dict[str, Any]] | None = None,
     ) -> None:
         resuming = run_id is not None
         self.run_id: str = run_id if resuming else _generate_run_id()
@@ -103,8 +104,64 @@ class Run:
                 datasets=datasets,
                 existing=self._meta.get("datasets"),
             )
+
+        # ── evaluations (optional, typically on resume) ───────
+        if evaluations is not None:
+            self._meta["evaluations"] = _build_evaluations_meta(
+                evaluations=evaluations,
+                existing=self._meta.get("evaluations"),
+            )
         self._flush_meta()
         self._setup_hooks()
+
+    # ── evaluations ──────────────────────────────────────────────
+
+    def add_evaluation(
+        self,
+        key: str,
+        *,
+        datasets: dict[str, Any] | None = None,
+        name: str | None = None,
+        status: str | None = None,
+        checkpoint: dict[str, Any] | None = None,
+        metadata: dict[str, Any] | None = None,
+    ) -> None:
+        """Add or update a single evaluation entry in ``meta.json``.
+
+        Processes *datasets* through the same modality-inference pipeline
+        used for top-level ``datasets``.  Other fields are stored as-is.
+        """
+        entry: dict[str, Any] = {}
+        if datasets is not None:
+            entry["datasets"] = datasets
+        if name is not None:
+            entry["name"] = name
+        if status is not None:
+            entry["status"] = status
+        if checkpoint is not None:
+            entry["checkpoint"] = checkpoint
+        if metadata is not None:
+            entry["metadata"] = metadata
+
+        self._meta["evaluations"] = _build_evaluations_meta(
+            evaluations={key: entry},
+            existing=self._meta.get("evaluations"),
+        )
+        self._flush_meta()
+
+    def finish_evaluation(self, key: str, status: str = "completed") -> None:
+        """Mark an existing evaluation as finished.
+
+        Raises ``KeyError`` if *key* does not exist in evaluations.
+        """
+        evals = self._meta.get("evaluations")
+        if not isinstance(evals, dict) or key not in evals:
+            raise KeyError(
+                f"Evaluation {key!r} not found — "
+                f"available: {list(evals) if isinstance(evals, dict) else []}"
+            )
+        evals[key]["status"] = status
+        self._flush_meta()
 
     # ── logging ───────────────────────────────────────────────────
 
@@ -352,6 +409,38 @@ def _build_datasets_meta(
         merged[split_name] = _describe_dataset(dataset)
 
     return merged
+
+
+def _build_evaluations_meta(
+    evaluations: Mapping[str, Mapping[str, Any]],
+    existing: Any,
+) -> dict[str, Any]:
+    merged: dict[str, Any] = dict(existing) if isinstance(existing, dict) else {}
+    for eval_key, eval_entry in evaluations.items():
+        merged[str(eval_key)] = _build_single_evaluation(
+            eval_entry, merged.get(str(eval_key)),
+        )
+    return merged
+
+
+def _build_single_evaluation(
+    entry: Mapping[str, Any],
+    existing: Any,
+) -> dict[str, Any]:
+    result: dict[str, Any] = dict(existing) if isinstance(existing, dict) else {}
+
+    raw_datasets = entry.get("datasets")
+    if raw_datasets is not None:
+        result["datasets"] = _build_datasets_meta(
+            datasets=raw_datasets,
+            existing=result.get("datasets"),
+        )
+
+    for field in ("name", "status", "checkpoint", "metadata"):
+        if field in entry:
+            result[field] = entry[field]
+
+    return result
 
 
 def _describe_dataset(dataset: Any) -> dict[str, Any]:

@@ -9,6 +9,9 @@ pip install -e .
 
 # with image saving support (Pillow)
 pip install -e ".[images]"
+
+# with GPU monitoring (nvidia-ml-py)
+pip install -e ".[gpu]"
 ```
 
 ## Quick start
@@ -95,7 +98,7 @@ Creates the run directory and writes `meta.json` + `config.json`.
 
 Appends one JSON line to `train.jsonl` (default) or `val.jsonl`.
 
-Fields `step`, `epoch`, and `wall_time` are added automatically. Training records also get `elapsed_sec`.
+Fields `step`, `epoch`, and `wall_time` are added automatically. Training records also get `elapsed_sec`. When `nvidia-ml-py` is installed, GPU stats (`gpu_util_pct`, `gpu_mem_util_pct`, `gpu_mem_used_gb`, `gpu_mem_total_gb`) are appended every 100 steps.
 
 ```python
 run.log({"loss": 0.42, "lr": 3e-5, "grad_norm": 1.2}, step=100, epoch=1)

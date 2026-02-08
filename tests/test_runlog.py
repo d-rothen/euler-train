@@ -423,6 +423,261 @@ class TestDatasetMetadata:
 
 
 # ═══════════════════════════════════════════════════════════════════════════
+#  evaluations metadata
+# ═══════════════════════════════════════════════════════════════════════════
+
+class TestEvaluationMetadata:
+    def test_evaluations_none_by_default(self, tmp_path):
+        run = euler_train.init(dir=str(tmp_path / "r"), config={})
+        meta = _read_json(run.dir / "meta.json")
+        assert "evaluations" not in meta
+        run.finish()
+
+    def test_evaluations_at_init_writes_to_meta(self, tmp_path, monkeypatch):
+        import euler_train.run as run_module
+
+        monkeypatch.setattr(
+            run_module,
+            "_read_ds_crawler_descriptor",
+            lambda path: {},
+        )
+
+        test_ds = _DummyDataset(
+            modalities={"rgb_input": "/mnt/ds/test/rgb"},
+        )
+
+        run = euler_train.init(
+            dir=str(tmp_path / "r"),
+            config={},
+            evaluations={
+                "eval_rgb": {
+                    "datasets": {"test": test_ds},
+                    "name": "RGB Eval",
+                    "status": "running",
+                    "checkpoint": {"epoch": 12, "step": 4800},
+                    "metadata": {"runner": "eval_v2"},
+                },
+            },
+        )
+        meta = _read_json(run.dir / "meta.json")
+        run.finish()
+
+        assert "evaluations" in meta
+        ev = meta["evaluations"]["eval_rgb"]
+        assert ev["name"] == "RGB Eval"
+        assert ev["status"] == "running"
+        assert ev["checkpoint"] == {"epoch": 12, "step": 4800}
+        assert ev["metadata"] == {"runner": "eval_v2"}
+        assert "test" in ev["datasets"]
+        assert "rgb_input" in ev["datasets"]["test"]["modalities"]
+        assert ev["datasets"]["test"]["modalities"]["rgb_input"]["path"] == "/mnt/ds/test/rgb"
+
+    def test_evaluation_datasets_use_describe_for_runlog(self, tmp_path, monkeypatch):
+        import euler_train.run as run_module
+
+        monkeypatch.setattr(
+            run_module,
+            "_read_ds_crawler_descriptor",
+            lambda _: (_ for _ in ()).throw(
+                AssertionError("ds-crawler should not be called")
+            ),
+        )
+
+        contract = {
+            "modalities": {
+                "rgb_pred": {
+                    "path": "/mnt/ds/preds/rgb",
+                    "used_as": "output",
+                }
+            },
+            "hierarchical_modalities": {},
+        }
+        test_ds = _DatasetWithRunlogDescription(contract)
+
+        run = euler_train.init(
+            dir=str(tmp_path / "r"),
+            config={},
+            evaluations={
+                "eval_rgb": {"datasets": {"test": test_ds}},
+            },
+        )
+        meta = _read_json(run.dir / "meta.json")
+        run.finish()
+
+        assert meta["evaluations"]["eval_rgb"]["datasets"]["test"] == contract
+
+    def test_evaluation_datasets_use_heuristic_inference(
+        self, tmp_path, monkeypatch
+    ):
+        import euler_train.run as run_module
+
+        monkeypatch.setattr(
+            run_module,
+            "_read_ds_crawler_descriptor",
+            lambda path: {},
+        )
+
+        test_ds = _DummyDataset(
+            modalities={
+                "input_rgb": "/mnt/ds/test/rgb",
+                "target_depth": "/mnt/ds/test/depth",
+            },
+        )
+
+        run = euler_train.init(
+            dir=str(tmp_path / "r"),
+            config={},
+            evaluations={
+                "eval_multi": {"datasets": {"test": test_ds}},
+            },
+        )
+        meta = _read_json(run.dir / "meta.json")
+        run.finish()
+
+        mods = meta["evaluations"]["eval_multi"]["datasets"]["test"]["modalities"]
+        assert mods["input_rgb"]["used_as"] == "input"
+        assert mods["target_depth"]["used_as"] == "target"
+
+    def test_evaluation_passthrough_fields(self, tmp_path):
+        run = euler_train.init(
+            dir=str(tmp_path / "r"),
+            config={},
+            evaluations={
+                "eval_a": {
+                    "name": "Eval A",
+                    "status": "running",
+                    "checkpoint": {"epoch": 5, "step": 2000, "name": "epoch_5"},
+                    "metadata": {"gpu": "A100"},
+                },
+            },
+        )
+        meta = _read_json(run.dir / "meta.json")
+        run.finish()
+
+        ev = meta["evaluations"]["eval_a"]
+        assert ev["name"] == "Eval A"
+        assert ev["status"] == "running"
+        assert ev["checkpoint"] == {"epoch": 5, "step": 2000, "name": "epoch_5"}
+        assert ev["metadata"] == {"gpu": "A100"}
+        # No datasets key when none provided
+        assert "datasets" not in ev
+
+    def test_evaluations_merged_on_resume(self, tmp_path):
+        # Create initial run with an evaluation
+        run1 = euler_train.init(
+            dir=str(tmp_path / "r"),
+            config={},
+            evaluations={
+                "eval_a": {"name": "First", "status": "completed"},
+            },
+        )
+        run_id = run1.run_id
+        run1.finish()
+
+        # Resume and add a second evaluation
+        run2 = euler_train.init(
+            dir=str(tmp_path / "r"),
+            run_id=run_id,
+            evaluations={
+                "eval_b": {"name": "Second", "status": "running"},
+            },
+        )
+        meta = _read_json(run2.dir / "meta.json")
+        run2.finish()
+
+        # Both evaluations present
+        assert "eval_a" in meta["evaluations"]
+        assert "eval_b" in meta["evaluations"]
+        assert meta["evaluations"]["eval_a"]["name"] == "First"
+        assert meta["evaluations"]["eval_b"]["name"] == "Second"
+
+    def test_add_evaluation_method(self, tmp_path, monkeypatch):
+        import euler_train.run as run_module
+
+        monkeypatch.setattr(
+            run_module,
+            "_read_ds_crawler_descriptor",
+            lambda path: {},
+        )
+
+        run = euler_train.init(dir=str(tmp_path / "r"), config={})
+        test_ds = _DummyDataset(modalities={"rgb": "/mnt/ds/test/rgb"})
+
+        run.add_evaluation(
+            "eval_rgb",
+            datasets={"test": test_ds},
+            name="RGB Eval",
+            status="running",
+            checkpoint={"epoch": 10, "step": 5000},
+        )
+
+        meta = _read_json(run.dir / "meta.json")
+        assert "evaluations" in meta
+        ev = meta["evaluations"]["eval_rgb"]
+        assert ev["name"] == "RGB Eval"
+        assert ev["status"] == "running"
+        assert ev["checkpoint"] == {"epoch": 10, "step": 5000}
+        assert ev["datasets"]["test"]["modalities"]["rgb"]["path"] == "/mnt/ds/test/rgb"
+        run.finish()
+
+    def test_add_evaluation_updates_existing(self, tmp_path):
+        run = euler_train.init(
+            dir=str(tmp_path / "r"),
+            config={},
+            evaluations={
+                "eval_a": {"name": "Original", "status": "running"},
+            },
+        )
+
+        run.add_evaluation("eval_a", status="completed", metadata={"score": 0.95})
+        meta = _read_json(run.dir / "meta.json")
+
+        ev = meta["evaluations"]["eval_a"]
+        assert ev["name"] == "Original"  # preserved from initial
+        assert ev["status"] == "completed"  # updated
+        assert ev["metadata"] == {"score": 0.95}  # added
+        run.finish()
+
+    def test_finish_evaluation(self, tmp_path):
+        run = euler_train.init(
+            dir=str(tmp_path / "r"),
+            config={},
+            evaluations={
+                "eval_a": {"name": "Eval A", "status": "running"},
+            },
+        )
+
+        run.finish_evaluation("eval_a")
+        meta = _read_json(run.dir / "meta.json")
+
+        assert meta["evaluations"]["eval_a"]["status"] == "completed"
+        assert meta["evaluations"]["eval_a"]["name"] == "Eval A"
+        run.finish()
+
+    def test_finish_evaluation_custom_status(self, tmp_path):
+        run = euler_train.init(
+            dir=str(tmp_path / "r"),
+            config={},
+            evaluations={
+                "eval_a": {"status": "running"},
+            },
+        )
+
+        run.finish_evaluation("eval_a", status="crashed")
+        meta = _read_json(run.dir / "meta.json")
+
+        assert meta["evaluations"]["eval_a"]["status"] == "crashed"
+        run.finish()
+
+    def test_finish_evaluation_missing_key_raises(self, tmp_path):
+        run = euler_train.init(dir=str(tmp_path / "r"), config={})
+
+        with pytest.raises(KeyError, match="eval_missing"):
+            run.finish_evaluation("eval_missing")
+        run.finish()
+
+
+# ═══════════════════════════════════════════════════════════════════════════
 #  log  (train.jsonl  /  val.jsonl)
 # ═══════════════════════════════════════════════════════════════════════════
 
