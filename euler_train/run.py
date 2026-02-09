@@ -583,7 +583,7 @@ def _extract_modality_paths(
     if isinstance(raw_attr, Mapping):
         result: dict[str, str] = {}
         for name, modality in raw_attr.items():
-            path = getattr(modality, "path", None)
+            path = getattr(modality, "origin_path", None) or getattr(modality, "path", None)
             if path is not None:
                 result[str(name)] = str(path)
         return result

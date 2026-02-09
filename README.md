@@ -78,7 +78,7 @@ The run ID and directory are available as `run.run_id` and `run.dir`.
 
 ## API reference
 
-### `euler_train.init(dir, config=None, meta=None, output_formats=None, run_id=None, datasets=None, run_name=None) → Run`
+### `euler_train.init(dir, config=None, meta=None, output_formats=None, run_id=None, datasets=None, run_name=None, evaluations=None) → Run`
 
 Creates the run directory and writes `meta.json` + `config.json`.
 
@@ -91,6 +91,7 @@ Creates the run directory and writes `meta.json` + `config.json`.
 | `run_id` | `str \| None` | Resume an existing run at `{dir}/runs/{run_id}` instead of creating a new one. |
 | `datasets` | `dict[str, Any] \| None` | Optional split → dataset map. If a dataset exposes `describe_for_runlog()`, that contract is used directly; otherwise euler_train infers structured modality metadata (`path`, `used_as`, `slot`, `modality_type`, and hierarchical fields), resolving fixed namespaced properties from `properties.euler_loading` and `properties.euler_train` before heuristics. |
 | `run_name` | `str \| None` | Optional human-readable run label stored in `meta.json`. |
+| `evaluations` | `dict[str, dict] \| None` | Optional evaluation key → entry map. See [Evaluations](#evaluations). |
 
 ---
 
@@ -156,6 +157,35 @@ run.save_checkpoint(model, epoch=5, optimizer=opt, best_loss=0.12)
 ### `run.finish(status="completed")`
 
 Writes final `end_time`, `duration_sec`, and `status` to `meta.json`. Called automatically when using the `with` block. Safe to call multiple times.
+
+---
+
+### `run.add_evaluation(key, *, datasets=None, name=None, status=None, checkpoint=None, metadata=None)`
+
+Adds or updates a single evaluation entry in `meta.json` under `evaluations[key]`. The `datasets` parameter accepts the same dataset objects as the top-level `datasets` parameter on `init()` and is processed through the same modality-inference pipeline. Flushes to disk immediately.
+
+If the key already exists, existing fields are preserved and only the provided fields are updated (merge semantics).
+
+```python
+run.add_evaluation(
+    "eval_rgb",
+    datasets={"test": test_ds},
+    name="RGB Eval",
+    status="running",
+    checkpoint={"epoch": 12, "step": 4800},
+)
+```
+
+---
+
+### `run.finish_evaluation(key, status="completed")`
+
+Updates the `status` of an existing evaluation entry and flushes to disk. Raises `KeyError` if the key does not exist.
+
+```python
+run.finish_evaluation("eval_rgb")                    # status → "completed"
+run.finish_evaluation("eval_depth", status="crashed") # custom status
+```
 
 ---
 
@@ -236,6 +266,23 @@ Auto-managed, not written to directly.
       }
     }
   },
+  "evaluations": {
+    "eval_rgb": {
+      "name": "RGB Eval",
+      "status": "completed",
+      "checkpoint": { "epoch": 12, "step": 4800 },
+      "metadata": { "runner": "eval_v2" },
+      "datasets": {
+        "test": {
+          "modalities": {
+            "rgb_input": { "path": "/mnt/ds/test/rgb", "used_as": "input" },
+            "rgb_pred": { "path": "/mnt/ds/preds/rgb", "used_as": "output" }
+          },
+          "hierarchical_modalities": {}
+        }
+      }
+    }
+  },
   "error": "RuntimeError: CUDA OOM",
   "traceback": "Traceback (most recent call last):\n  ..."
 }
@@ -244,7 +291,84 @@ Auto-managed, not written to directly.
 - `end_time`, `end_iso`, `duration_sec` are `null` while `status` is `"running"`.
 - `slurm` is `null` when not running under SLURM.
 - `datasets` is only present when `datasets=...` is passed to `euler_train.init`.
+- `evaluations` is only present when evaluations are provided via `evaluations=...` on `init()` or added via `run.add_evaluation()`.
 - `error` and `traceback` are only present when `status` is `"crashed"` (context manager / excepthook) or `"interrupted"` (SIGTERM/SIGINT).
+
+## Evaluations
+
+Evaluations record model evaluation runs against test/validation splits, linking each evaluation to a checkpoint and its input/output datasets. They are written into the `evaluations` key of `meta.json` in the object form expected by downstream ingestion services (see `META_JSON_INGEST_README.md`).
+
+### Typical usage: resume a trained run for evaluation
+
+```python
+import euler_train
+
+# Resume the training run by its run_id
+run = euler_train.init(
+    dir="runs/experiment_01",
+    run_id="2025-01-28_15-30-42_a3f2",
+    evaluations={
+        "eval_rgb": {
+            "datasets": {"test": test_rgb_ds},
+            "name": "RGB Eval",
+            "status": "running",
+            "checkpoint": {"epoch": 12, "step": 4800},
+            "metadata": {"runner": "eval_v2"},
+        },
+    },
+)
+
+# ... run evaluation logic ...
+
+run.finish_evaluation("eval_rgb")  # status → "completed"
+run.finish()
+```
+
+### Evaluation entry fields
+
+Each evaluation entry (the value under `evaluations[key]`) supports:
+
+| Field | Type | Description |
+|---|---|---|
+| `datasets` | `dict[str, dataset]` | Split → dataset map (same objects as top-level `datasets`). Processed through the same modality-inference pipeline. |
+| `name` | `str` | Human-readable evaluation label. |
+| `status` | `str` | Evaluation status (`"running"`, `"completed"`, `"crashed"`, etc.). |
+| `checkpoint` | `dict` | Checkpoint reference. Typically `{"epoch": int, "step": int}`, optionally with `"name"`. |
+| `metadata` | `dict` | Arbitrary metadata (e.g. `{"runner": "eval_v2", "gpu": "A100"}`). |
+
+All fields are optional. `datasets` is processed through `_build_datasets_meta` (contract → ds-crawler → heuristics); all other fields are stored as-is.
+
+### Adding evaluations incrementally
+
+Use `add_evaluation()` to register evaluations one at a time after init. This is useful when running multiple evaluations sequentially:
+
+```python
+run = euler_train.init(dir="runs/exp", run_id="2025-01-28_15-30-42_a3f2")
+
+for split_name, ds in [("eval_rgb", test_rgb_ds), ("eval_depth", test_depth_ds)]:
+    run.add_evaluation(
+        split_name,
+        datasets={"test": ds},
+        status="running",
+        checkpoint={"epoch": 12, "step": 4800},
+    )
+    evaluate(model, ds)
+    run.finish_evaluation(split_name)
+
+run.finish()
+```
+
+Each `add_evaluation()` call flushes `meta.json` immediately. Calling it with an existing key merges fields — existing fields not provided in the update are preserved.
+
+### Merge semantics on resume
+
+When resuming a run that already has evaluations in its `meta.json`, new evaluations are merged by key:
+
+- Existing evaluation keys not present in the new `evaluations` dict are **preserved**.
+- Existing keys present in the new dict are **updated** (field-level merge within each entry).
+- New keys are **added**.
+
+This means you can run evaluations across multiple sessions without losing previously recorded results.
 
 ## Dev
 
