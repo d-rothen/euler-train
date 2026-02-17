@@ -16,6 +16,8 @@ from typing import Any
 from .serialization import append_jsonl, normalize_config, read_json, write_json
 from .outputs import save_output_tree
 from .slurm import get_slurm_info
+from .git_info import get_code_ref
+from .environment import get_run_environment
 
 _DATASET_META_NAMESPACES = ("euler_loading", "euler_train")
 
@@ -67,6 +69,11 @@ class Run:
             self.config: dict = normalize_config(config)
 
         write_json(self.dir / "config.json", self.config)
+
+        # ── code ref & run environment (fresh runs only) ─────────
+        if not resuming:
+            write_json(self.dir / "code_ref.json", get_code_ref())
+            write_json(self.dir / "run_environment.json", get_run_environment())
 
         # ── meta ──────────────────────────────────────────────────
         if resuming:
