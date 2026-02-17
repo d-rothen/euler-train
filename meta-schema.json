@@ -1,0 +1,154 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "meta.json",
+  "description": "Schema for the meta.json file written by euler_train for each run.",
+  "type": "object",
+  "properties": {
+    "run_id": {
+      "type": "string",
+      "description": "Unique run identifier (timestamp + random hex suffix)."
+    },
+    "run_name": {
+      "type": ["string", "null"],
+      "description": "Optional human-readable name for the run."
+    },
+    "status": {
+      "type": "string",
+      "enum": ["running", "completed", "crashed", "interrupted"],
+      "description": "Current lifecycle status of the run."
+    },
+    "start_time": {
+      "type": "number",
+      "description": "Unix timestamp when the run started."
+    },
+    "start_iso": {
+      "type": "string",
+      "description": "ISO 8601 formatted start time (local)."
+    },
+    "end_time": {
+      "type": ["number", "null"],
+      "description": "Unix timestamp when the run finished. Null while running."
+    },
+    "end_iso": {
+      "type": ["string", "null"],
+      "description": "ISO 8601 formatted end time. Null while running."
+    },
+    "duration_sec": {
+      "type": ["number", "null"],
+      "description": "Wall-clock duration in seconds. Null while running."
+    },
+    "pid": {
+      "type": "integer",
+      "description": "Process ID of the training process."
+    },
+    "python": {
+      "type": "string",
+      "description": "Python version string (e.g. \"3.11.5\")."
+    },
+    "command": {
+      "type": "array",
+      "items": { "type": "string" },
+      "description": "The full sys.argv command line."
+    },
+    "error": {
+      "type": "string",
+      "description": "Error summary. Present when status is \"crashed\" or \"interrupted\"."
+    },
+    "traceback": {
+      "type": "string",
+      "description": "Full Python traceback. Present when status is \"crashed\"."
+    },
+    "slurm": {
+      "type": ["object", "null"],
+      "description": "SLURM job metadata. Null when not running under SLURM.",
+      "properties": {
+        "job_id":          { "type": ["string", "null"], "description": "SLURM_JOB_ID" },
+        "job_name":        { "type": ["string", "null"], "description": "SLURM_JOB_NAME" },
+        "node":            { "type": ["string", "null"], "description": "SLURM_NODELIST" },
+        "partition":       { "type": ["string", "null"], "description": "SLURM_JOB_PARTITION" },
+        "gpus":            { "type": ["string", "null"], "description": "SLURM_GPUS — total GPUs allocated" },
+        "cpus":            { "type": ["string", "null"], "description": "SLURM_CPUS_PER_TASK" },
+        "array_task_id":   { "type": ["string", "null"], "description": "SLURM_ARRAY_TASK_ID — set for array jobs" },
+        "num_nodes":       { "type": ["string", "null"], "description": "SLURM_JOB_NUM_NODES" },
+        "ntasks":          { "type": ["string", "null"], "description": "SLURM_NTASKS — total tasks" },
+        "ntasks_per_node": { "type": ["string", "null"], "description": "SLURM_NTASKS_PER_NODE" },
+        "gpus_per_node":   { "type": ["string", "null"], "description": "SLURM_GPUS_PER_NODE" },
+        "mem_per_node":    { "type": ["string", "null"], "description": "SLURM_MEM_PER_NODE (MB)" },
+        "mem_per_cpu":     { "type": ["string", "null"], "description": "SLURM_MEM_PER_CPU (MB)" },
+        "stdout_path":     { "type": ["string", "null"], "description": "SLURM_JOB_STDOUT — resolved --output log path (Slurm ≥22.05)" },
+        "stderr_path":     { "type": ["string", "null"], "description": "SLURM_JOB_STDERR — resolved --error log path (Slurm ≥22.05)" },
+        "submit_dir":      { "type": ["string", "null"], "description": "SLURM_SUBMIT_DIR — directory sbatch was invoked from" }
+      },
+      "additionalProperties": false
+    },
+    "datasets": {
+      "type": "object",
+      "description": "Per-split dataset metadata (e.g. \"train\", \"val\").",
+      "additionalProperties": {
+        "$ref": "#/$defs/dataset_split"
+      }
+    },
+    "evaluations": {
+      "type": "object",
+      "description": "Named evaluation entries, keyed by evaluation identifier.",
+      "additionalProperties": {
+        "$ref": "#/$defs/evaluation_entry"
+      }
+    }
+  },
+  "required": ["run_id", "status", "start_time", "start_iso", "pid", "python", "command"],
+  "additionalProperties": true,
+  "$defs": {
+    "modality_entry": {
+      "type": "object",
+      "description": "Metadata for a single modality.",
+      "properties": {
+        "path":            { "type": "string", "description": "Filesystem path to the modality data." },
+        "used_as":         { "type": "string", "description": "Role: \"input\", \"target\", or \"condition\"." },
+        "slot":            { "type": "string", "description": "Dotted slot identifier (e.g. \"target.rgb\")." },
+        "modality_type":   { "type": "string", "description": "Data type: \"rgb\", \"depth\", \"segmentation\", etc." },
+        "hierarchy_scope": { "type": "string", "description": "Hierarchy scope label. Only for hierarchical modalities." },
+        "applies_to":      {
+          "type": "array",
+          "items": { "type": "string" },
+          "description": "Regular modality names this hierarchical modality applies to."
+        }
+      },
+      "required": ["path"],
+      "additionalProperties": true
+    },
+    "dataset_split": {
+      "type": "object",
+      "description": "Modality information for one dataset split.",
+      "properties": {
+        "modalities": {
+          "type": "object",
+          "description": "Regular (non-hierarchical) modalities.",
+          "additionalProperties": { "$ref": "#/$defs/modality_entry" }
+        },
+        "hierarchical_modalities": {
+          "type": "object",
+          "description": "Hierarchical modalities (e.g. multi-scale conditions).",
+          "additionalProperties": { "$ref": "#/$defs/modality_entry" }
+        }
+      },
+      "additionalProperties": true
+    },
+    "evaluation_entry": {
+      "type": "object",
+      "description": "A single evaluation run.",
+      "properties": {
+        "name":       { "type": "string", "description": "Human-readable evaluation name." },
+        "status":     { "type": "string", "description": "Evaluation status (e.g. \"completed\")." },
+        "checkpoint": { "type": "object", "description": "Checkpoint info used for this evaluation.", "additionalProperties": true },
+        "metadata":   { "type": "object", "description": "Arbitrary evaluation metadata.", "additionalProperties": true },
+        "datasets": {
+          "type": "object",
+          "description": "Per-split dataset metadata for this evaluation.",
+          "additionalProperties": { "$ref": "#/$defs/dataset_split" }
+        }
+      },
+      "additionalProperties": true
+    }
+  }
+}
