@@ -59,6 +59,8 @@ Each `euler_train.init(dir=...)` call creates a timestamped subdirectory under `
     └── 2025-01-28_15-30-42_a3f2/   ← auto-generated run ID
         ├── meta.json
         ├── config.json
+        ├── code_ref.json
+        ├── run_environment.json
         ├── train.jsonl
         ├── val.jsonl
         ├── checkpoints/
@@ -80,7 +82,7 @@ The run ID and directory are available as `run.run_id` and `run.dir`.
 
 ### `euler_train.init(dir, config=None, meta=None, output_formats=None, run_id=None, datasets=None, run_name=None, evaluations=None) → Run`
 
-Creates the run directory and writes `meta.json` + `config.json`.
+Creates the run directory and writes `meta.json`, `config.json`, `code_ref.json`, and `run_environment.json`. On resume (`run_id` provided), only `meta.json` and `config.json` are updated.
 
 | Parameter | Type | Description |
 |---|---|---|
@@ -243,7 +245,16 @@ Auto-managed, not written to directly.
     "partition": "gpu",
     "gpus": "1",
     "cpus": "8",
-    "array_task_id": "0"
+    "array_task_id": "0",
+    "num_nodes": "1",
+    "ntasks": "1",
+    "ntasks_per_node": "1",
+    "gpus_per_node": "1",
+    "mem_per_node": "32000",
+    "mem_per_cpu": "4000",
+    "stdout_path": "/path/to/slurm-123456.out",
+    "stderr_path": "/path/to/slurm-123456.err",
+    "submit_dir": "/home/user/project"
   },
   "datasets": {
     "train": {
@@ -293,6 +304,56 @@ Auto-managed, not written to directly.
 - `datasets` is only present when `datasets=...` is passed to `euler_train.init`.
 - `evaluations` is only present when evaluations are provided via `evaluations=...` on `init()` or added via `run.add_evaluation()`.
 - `error` and `traceback` are only present when `status` is `"crashed"` (context manager / excepthook) or `"interrupted"` (SIGTERM/SIGINT).
+
+A formal JSON Schema for `meta.json` is available at [`meta-schema.json`](meta-schema.json).
+
+## `code_ref.json` schema
+
+Written once when a fresh run is created (not on resume). Captures git repository state at the time of the run.
+
+```json
+{
+  "repo_url": "git@github.com:user/repo.git",
+  "branch": "main",
+  "commit_sha": "abc123def456...",
+  "is_dirty": true,
+  "dirty_diff": "diff --git a/train.py ...",
+  "commit_message": "Add learning rate scheduler\n",
+  "committed_at": "2025-01-28T15:20:00+01:00"
+}
+```
+
+- `is_dirty` is `true` when there are uncommitted changes.
+- `dirty_diff` contains the output of `git diff HEAD` when dirty, `null` otherwise.
+- All fields are `null` if the project is not inside a git repository.
+
+## `run_environment.json` schema
+
+Written once when a fresh run is created (not on resume). Snapshots the runtime environment.
+
+```json
+{
+  "name": "gpu-node-01",
+  "python_version": "3.11.5",
+  "cuda_version": "12.1",
+  "gpu_type": "NVIDIA A100-SXM4-80GB",
+  "gpu_count": 4,
+  "packages_snapshot": {
+    "torch": "2.1.0",
+    "numpy": "1.26.2",
+    "Pillow": "10.1.0"
+  },
+  "docker_image": null,
+  "docker_digest": null,
+  "metadata": null
+}
+```
+
+- `name` is the hostname of the machine.
+- `cuda_version` is detected from PyTorch, `nvcc`, or the `CUDA_VERSION` env var (first available).
+- `gpu_type` and `gpu_count` are detected via `pynvml` or `nvidia-smi` (first available).
+- `packages_snapshot` is the output of `pip freeze` (or `uv pip freeze`), parsed into a `{name: version}` dict.
+- Fields are `null` when the corresponding tool/library is unavailable.
 
 ## Evaluations
 
