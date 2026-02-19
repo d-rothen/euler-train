@@ -1,4 +1,6 @@
 """Collect git repository metadata for code_ref.json."""
+from __future__ import annotations
+
 import subprocess
 
 
