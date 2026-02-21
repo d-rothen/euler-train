@@ -194,6 +194,7 @@ class TestDatasetMetadata:
                     "path": "/datasets/camera_intrinsics",
                     "used_as": "condition",
                     "slot": "dehaze.condition.camera_intrinsics",
+                    "modality_type": "camera_intrinsics",
                     "hierarchy_scope": "scene_camera",
                     "applies_to": ["hazy_rgb"],
                 }
@@ -245,6 +246,7 @@ class TestDatasetMetadata:
                 },
             },
             "/datasets/camera_intrinsics": {
+                "modality_type": "camera_intrinsics",
                 "properties": {
                     "euler_train": {
                         "used_as": "condition",
@@ -306,6 +308,7 @@ class TestDatasetMetadata:
                     "path": "/datasets/camera_intrinsics",
                     "used_as": "condition",
                     "slot": "dehaze.condition.camera_intrinsics",
+                    "modality_type": "camera_intrinsics",
                     "hierarchy_scope": "scene_camera",
                     "applies_to": ["hazy_rgb", "clear_rgb", "depth"],
                 }
@@ -377,14 +380,6 @@ class TestDatasetMetadata:
                 "hazy_rgb": "/datasets/hazy_rgb",
                 "target_depth": "/datasets/target_depth",
             },
-            hierarchical_modalities={
-                "camera_intrinsics": "/datasets/camera_intrinsics",
-            },
-            hierarchical_lookups={
-                "camera_intrinsics": {
-                    ("scene_0001", "camera_0"): [{"id": "intrinsics"}],
-                }
-            },
         )
 
         run = euler_train.init(
@@ -410,16 +405,108 @@ class TestDatasetMetadata:
                     "modality_type": "depth",
                 },
             },
-            "hierarchical_modalities": {
-                "camera_intrinsics": {
-                    "path": "/datasets/camera_intrinsics",
-                    "used_as": "condition",
-                    "slot": "condition.camera_intrinsics",
-                    "hierarchy_scope": "scene_camera",
-                    "applies_to": ["hazy_rgb", "target_depth"],
+            "hierarchical_modalities": {},
+        }
+
+
+# ═══════════════════════════════════════════════════════════════════════════
+#  modality field enforcement (used_as, modality_type, slot)
+# ═══════════════════════════════════════════════════════════════════════════
+
+class TestModalityFieldEnforcement:
+    def test_error_when_used_as_cannot_be_inferred(self, tmp_path, monkeypatch):
+        import euler_train.run as run_module
+
+        monkeypatch.setattr(run_module, "_read_ds_crawler_descriptor", lambda path: {})
+
+        ds = _DummyDataset(modalities={"mystery": "/datasets/mystery"})
+        with pytest.raises(ValueError, match="could not determine 'used_as'"):
+            euler_train.init(
+                dir=str(tmp_path / "r"), config={},
+                datasets={"train": ds},
+            )
+
+    def test_error_when_modality_type_cannot_be_inferred(self, tmp_path, monkeypatch):
+        import euler_train.run as run_module
+
+        monkeypatch.setattr(run_module, "_read_ds_crawler_descriptor", lambda path: {})
+
+        # "input_data" → used_as="input" works, but modality_type has no hint
+        ds = _DummyDataset(modalities={"input_data": "/datasets/data"})
+        with pytest.raises(ValueError, match="could not determine 'modality_type'"):
+            euler_train.init(
+                dir=str(tmp_path / "r"), config={},
+                datasets={"train": ds},
+            )
+
+    def test_contract_missing_required_field_raises(self, tmp_path):
+        contract = {
+            "modalities": {
+                "rgb_pred": {
+                    "path": "/mnt/ds/preds/rgb",
+                    "used_as": "output",
+                    # missing modality_type and slot
                 }
             },
+            "hierarchical_modalities": {},
         }
+        ds = _DatasetWithRunlogDescription(contract)
+        with pytest.raises(ValueError, match="missing required field 'modality_type'"):
+            euler_train.init(
+                dir=str(tmp_path / "r"), config={},
+                datasets={"train": ds},
+            )
+
+    def test_warning_on_heuristic_used_as(self, tmp_path, monkeypatch):
+        import euler_train.run as run_module
+
+        monkeypatch.setattr(
+            run_module, "_read_ds_crawler_descriptor",
+            lambda path: {"modality_type": "rgb"},
+        )
+
+        ds = _DummyDataset(modalities={"hazy_rgb": "/datasets/hazy_rgb"})
+        with pytest.warns(UserWarning, match="'used_as' was inferred"):
+            euler_train.init(
+                dir=str(tmp_path / "r"), config={},
+                datasets={"train": ds},
+            )
+
+    def test_warning_on_heuristic_modality_type(self, tmp_path, monkeypatch):
+        import euler_train.run as run_module
+
+        monkeypatch.setattr(
+            run_module, "_read_ds_crawler_descriptor",
+            lambda path: {"properties": {"euler_train": {"used_as": "input"}}},
+        )
+
+        ds = _DummyDataset(modalities={"input_rgb": "/datasets/input_rgb"})
+        with pytest.warns(UserWarning, match="'modality_type' was inferred"):
+            euler_train.init(
+                dir=str(tmp_path / "r"), config={},
+                datasets={"train": ds},
+            )
+
+    def test_no_warning_when_explicit(self, tmp_path, monkeypatch):
+        import euler_train.run as run_module
+
+        monkeypatch.setattr(
+            run_module, "_read_ds_crawler_descriptor",
+            lambda path: {
+                "modality_type": "rgb",
+                "properties": {"euler_train": {"used_as": "input"}},
+            },
+        )
+
+        ds = _DummyDataset(modalities={"hazy_rgb": "/datasets/hazy_rgb"})
+        import warnings as _w
+        with _w.catch_warnings():
+            _w.simplefilter("error")
+            run = euler_train.init(
+                dir=str(tmp_path / "r"), config={},
+                datasets={"train": ds},
+            )
+            run.finish()
 
 
 # ═══════════════════════════════════════════════════════════════════════════
@@ -488,6 +575,8 @@ class TestEvaluationMetadata:
                 "rgb_pred": {
                     "path": "/mnt/ds/preds/rgb",
                     "used_as": "output",
+                    "modality_type": "rgb",
+                    "slot": "output.rgb",
                 }
             },
             "hierarchical_modalities": {},
@@ -601,7 +690,7 @@ class TestEvaluationMetadata:
         )
 
         run = euler_train.init(dir=str(tmp_path / "r"), config={})
-        test_ds = _DummyDataset(modalities={"rgb": "/mnt/ds/test/rgb"})
+        test_ds = _DummyDataset(modalities={"input_rgb": "/mnt/ds/test/rgb"})
 
         run.add_evaluation(
             "eval_rgb",
@@ -617,7 +706,7 @@ class TestEvaluationMetadata:
         assert ev["name"] == "RGB Eval"
         assert ev["status"] == "running"
         assert ev["checkpoint"] == {"epoch": 10, "step": 5000}
-        assert ev["datasets"]["test"]["modalities"]["rgb"]["path"] == "/mnt/ds/test/rgb"
+        assert ev["datasets"]["test"]["modalities"]["input_rgb"]["path"] == "/mnt/ds/test/rgb"
         run.finish()
 
     def test_add_evaluation_updates_existing(self, tmp_path):
@@ -1050,7 +1139,7 @@ class TestSaveCheckpoint:
     def test_saves_model_state_dict(self, tmp_path):
         model = torch.nn.Linear(4, 2)
         run = euler_train.init(dir=str(tmp_path / "r"), config={})
-        path = run.save_checkpoint(model, epoch=3)
+        path = run.save_checkpoint(model, epoch=3, step=1200)
 
         assert path == run.dir / "checkpoints" / "epoch_3.pt"
         assert path.exists()
@@ -1058,6 +1147,7 @@ class TestSaveCheckpoint:
         assert "model" in ckpt
         assert "epoch" in ckpt
         assert ckpt["epoch"] == 3
+        assert ckpt["step"] == 1200
         # Verify weights match
         for k in model.state_dict():
             torch.testing.assert_close(ckpt["model"][k], model.state_dict()[k])
@@ -1066,7 +1156,7 @@ class TestSaveCheckpoint:
     def test_saves_raw_dict_as_model(self, tmp_path):
         raw = {"weight": torch.randn(3, 3)}
         run = euler_train.init(dir=str(tmp_path / "r"), config={})
-        path = run.save_checkpoint(raw, epoch=0)
+        path = run.save_checkpoint(raw, epoch=0, step=0)
 
         ckpt = torch.load(path, weights_only=False)
         assert ckpt["model"] is not None
@@ -1079,7 +1169,7 @@ class TestSaveCheckpoint:
         opt = torch.optim.SGD(model.parameters(), lr=0.01)
 
         run = euler_train.init(dir=str(tmp_path / "r"), config={})
-        path = run.save_checkpoint(model, epoch=1, optimizer=opt)
+        path = run.save_checkpoint(model, epoch=1, step=500, optimizer=opt)
 
         ckpt = torch.load(path, weights_only=False)
         assert "optimizer" in ckpt
@@ -1089,11 +1179,74 @@ class TestSaveCheckpoint:
     def test_saves_extra_kwargs(self, tmp_path):
         model = torch.nn.Linear(4, 2)
         run = euler_train.init(dir=str(tmp_path / "r"), config={})
-        path = run.save_checkpoint(model, epoch=5, best_loss=0.42, global_step=9999)
+        path = run.save_checkpoint(model, epoch=5, step=9999, best_loss=0.42)
 
         ckpt = torch.load(path, weights_only=False)
         assert ckpt["best_loss"] == 0.42
-        assert ckpt["global_step"] == 9999
+        assert ckpt["step"] == 9999
+        run.finish()
+
+
+# ═══════════════════════════════════════════════════════════════════════════
+#  log_saved_checkpoint
+# ═══════════════════════════════════════════════════════════════════════════
+
+class TestLogSavedCheckpoint:
+    def test_save_checkpoint_logs_to_meta(self, tmp_path):
+        model = torch.nn.Linear(4, 2)
+        run = euler_train.init(dir=str(tmp_path / "r"), config={})
+        path = run.save_checkpoint(model, epoch=3, step=1200)
+
+        meta = _read_json(run.dir / "meta.json")
+        assert "checkpoints" in meta
+        assert len(meta["checkpoints"]) == 1
+        assert meta["checkpoints"][0]["path"] == str(path)
+        assert meta["checkpoints"][0]["epoch"] == 3
+        assert meta["checkpoints"][0]["step"] == 1200
+        run.finish()
+
+    def test_log_saved_checkpoint_external(self, tmp_path):
+        run = euler_train.init(dir=str(tmp_path / "r"), config={})
+        run.log_saved_checkpoint("/custom/path/model.pt", epoch=5, step=2000)
+
+        meta = _read_json(run.dir / "meta.json")
+        assert len(meta["checkpoints"]) == 1
+        entry = meta["checkpoints"][0]
+        assert entry["path"] == "/custom/path/model.pt"
+        assert entry["epoch"] == 5
+        assert entry["step"] == 2000
+        run.finish()
+
+    def test_multiple_checkpoints_appended(self, tmp_path):
+        run = euler_train.init(dir=str(tmp_path / "r"), config={})
+        run.log_saved_checkpoint("/ckpt/e1.pt", epoch=1, step=400)
+        run.log_saved_checkpoint("/ckpt/e2.pt", epoch=2, step=800)
+        run.log_saved_checkpoint("/ckpt/e3.pt", epoch=3, step=1200)
+
+        meta = _read_json(run.dir / "meta.json")
+        assert len(meta["checkpoints"]) == 3
+        assert [c["epoch"] for c in meta["checkpoints"]] == [1, 2, 3]
+        assert [c["step"] for c in meta["checkpoints"]] == [400, 800, 1200]
+        run.finish()
+
+    def test_is_best_clears_previous(self, tmp_path):
+        run = euler_train.init(dir=str(tmp_path / "r"), config={})
+        run.log_saved_checkpoint("/ckpt/e1.pt", epoch=1, step=400, is_best=True)
+        run.log_saved_checkpoint("/ckpt/e2.pt", epoch=2, step=800)
+        run.log_saved_checkpoint("/ckpt/e3.pt", epoch=3, step=1200, is_best=True)
+
+        meta = _read_json(run.dir / "meta.json")
+        assert len(meta["checkpoints"]) == 3
+        # Only the last one should have is_best
+        assert "is_best" not in meta["checkpoints"][0]
+        assert "is_best" not in meta["checkpoints"][1]
+        assert meta["checkpoints"][2]["is_best"] is True
+        run.finish()
+
+    def test_no_checkpoints_key_when_none_logged(self, tmp_path):
+        run = euler_train.init(dir=str(tmp_path / "r"), config={})
+        meta = _read_json(run.dir / "meta.json")
+        assert "checkpoints" not in meta
         run.finish()
 
 

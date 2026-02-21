@@ -5,6 +5,7 @@ import atexit
 import os
 import re
 import secrets
+import warnings
 import signal
 import sys
 import time
@@ -279,6 +280,7 @@ class Run:
         model: Any,
         *,
         epoch: int,
+        step: int,
         optimizer: Any = None,
         **extra: Any,
     ) -> Path:
@@ -294,7 +296,7 @@ class Run:
         ckpt_dir.mkdir(parents=True, exist_ok=True)
         path = ckpt_dir / f"epoch_{epoch}.pt"
 
-        state: dict[str, Any] = {"epoch": epoch}
+        state: dict[str, Any] = {"epoch": epoch, "step": step}
         state["model"] = (
             model.state_dict() if hasattr(model, "state_dict") else model
         )
@@ -306,7 +308,40 @@ class Run:
             )
         state.update(extra)
         torch.save(state, path)
+        self.log_saved_checkpoint(path, epoch=epoch, step=step)
         return path
+
+    def log_saved_checkpoint(
+        self,
+        path: str | Path,
+        *,
+        epoch: int,
+        step: int,
+        is_best: bool = False,
+    ) -> None:
+        """Record a saved checkpoint in ``meta.json``.
+
+        Call this after saving a checkpoint yourself, or let
+        :meth:`save_checkpoint` call it automatically.  When *is_best*
+        is ``True``, any previous checkpoint marked as best is cleared.
+        """
+        checkpoints: list[dict[str, Any]] = self._meta.get("checkpoints", [])
+
+        if is_best:
+            for entry in checkpoints:
+                entry.pop("is_best", None)
+
+        record: dict[str, Any] = {
+            "path": str(path),
+            "epoch": epoch,
+            "step": step,
+        }
+        if is_best:
+            record["is_best"] = True
+
+        checkpoints.append(record)
+        self._meta["checkpoints"] = checkpoints
+        self._flush_meta()
 
     # ── lifecycle ─────────────────────────────────────────────────
 
@@ -450,9 +485,26 @@ def _build_single_evaluation(
     return result
 
 
+_REQUIRED_MODALITY_FIELDS = ("used_as", "modality_type", "slot")
+
+
+def _validate_modality_entries(entries: dict[str, dict[str, Any]]) -> None:
+    for name, entry in entries.items():
+        for field in _REQUIRED_MODALITY_FIELDS:
+            if not entry.get(field):
+                path = entry.get("path", "<unknown>")
+                raise ValueError(
+                    f"Modality {name!r} (path: {path}): missing required field "
+                    f"{field!r}. Provide it via describe_for_runlog() or "
+                    f"set 'properties.euler_train.{field}' explicitly."
+                )
+
+
 def _describe_dataset(dataset: Any) -> dict[str, Any]:
     described = _describe_dataset_via_contract(dataset)
     if described is not None:
+        _validate_modality_entries(described.get("modalities", {}))
+        _validate_modality_entries(described.get("hierarchical_modalities", {}))
         return described
 
     modality_paths = _extract_modality_paths(
@@ -661,31 +713,62 @@ def _build_modality_entry(
     hierarchy_levels: list[tuple[str, ...]] | None,
 ) -> dict[str, Any]:
     properties = _properties_with_namespaces(descriptor.get("properties"))
-    used_as = _infer_used_as(
+    used_as, used_as_explicit = _infer_used_as(
         name=name,
         properties=properties,
         is_hierarchical=is_hierarchical,
     )
-    modality_type = _infer_modality_type(
+    modality_type, modality_type_explicit = _infer_modality_type(
         name=name,
         path=path,
         descriptor=descriptor,
         properties=properties,
     )
+
+    if used_as is None:
+        raise ValueError(
+            f"Modality {name!r} (path: {path}): could not determine 'used_as'. "
+            f"Set 'properties.euler_train.used_as' explicitly."
+        )
+    if modality_type is None:
+        raise ValueError(
+            f"Modality {name!r} (path: {path}): could not determine 'modality_type'. "
+            f"Set 'properties.euler_train.modality_type' explicitly."
+        )
+
+    if not used_as_explicit:
+        warnings.warn(
+            f"Modality {name!r} (path: {path}): 'used_as' was inferred as "
+            f"{used_as!r} from the modality name. "
+            f"Set 'properties.euler_train.used_as' explicitly to suppress this warning.",
+            stacklevel=2,
+        )
+    if not modality_type_explicit:
+        warnings.warn(
+            f"Modality {name!r} (path: {path}): 'modality_type' was inferred as "
+            f"{modality_type!r} from the modality name/path. "
+            f"Set 'properties.euler_train.modality_type' explicitly to suppress this warning.",
+            stacklevel=2,
+        )
+
     slot = _infer_slot(
         name=name,
         used_as=used_as,
         modality_type=modality_type,
         properties=properties,
     )
+    if slot is None:
+        raise ValueError(
+            f"Modality {name!r} (path: {path}): could not determine 'slot'. "
+            f"Set 'properties.euler_train.slot' explicitly."
+        )
 
-    entry: dict[str, Any] = {"path": path}
-    if used_as is not None:
-        entry["used_as"] = used_as
-    if slot is not None:
-        entry["slot"] = slot
-    if modality_type is not None:
-        entry["modality_type"] = modality_type
+    entry: dict[str, Any] = {
+        "path": path,
+        "used_as": used_as,
+        "slot": slot,
+        "modality_type": modality_type,
+    }
 
     if is_hierarchical:
         hierarchy_scope = _infer_hierarchy_scope(
@@ -732,26 +815,27 @@ def _infer_used_as(
     name: str,
     properties: list[Mapping[str, Any]],
     is_hierarchical: bool,
-) -> str | None:
+) -> tuple[str | None, bool]:
+    """Return ``(value, is_explicit)``."""
     explicit = _as_non_empty_str(
         _resolve_property(properties, "used_as")
     )
     if explicit is not None:
-        return explicit
+        return explicit, True
 
     lowered = name.lower()
     if any(
         token in lowered
         for token in ("condition", "cond", "camera", "intrinsics", "extrinsics", "pose")
     ):
-        return "condition"
+        return "condition", False
     if any(token in lowered for token in ("target", "gt", "label", "clear", "clean")):
-        return "target"
+        return "target", False
     if any(token in lowered for token in ("input", "source", "src", "hazy", "noisy", "raw")):
-        return "input"
+        return "input", False
     if is_hierarchical:
-        return "condition"
-    return None
+        return "condition", False
+    return None, False
 
 
 def _infer_modality_type(
@@ -760,25 +844,26 @@ def _infer_modality_type(
     path: str,
     descriptor: Mapping[str, Any],
     properties: list[Mapping[str, Any]],
-) -> str | None:
+) -> tuple[str | None, bool]:
+    """Return ``(value, is_explicit)``."""
     explicit = _as_non_empty_str(descriptor.get("modality_type"))
     if explicit is not None:
-        return explicit
+        return explicit, True
 
     explicit = _as_non_empty_str(
         _resolve_property(properties, "modality_type")
     )
     if explicit is not None:
-        return explicit
+        return explicit, True
 
     lowered = f"{name} {path}".lower()
     if any(token in lowered for token in ("rgb", "image", "img", "color", "colour")):
-        return "rgb"
+        return "rgb", False
     if any(token in lowered for token in ("depth", "disparity")):
-        return "depth"
+        return "depth", False
     if any(token in lowered for token in ("segmentation", "segment", "mask", "semantic")):
-        return "segmentation"
-    return None
+        return "segmentation", False
+    return None, False
 
 
 def _infer_slot(

@@ -88,6 +88,11 @@
         "$ref": "#/$defs/dataset_split"
       }
     },
+    "checkpoints": {
+      "type": "array",
+      "description": "Logged checkpoints, in order of creation.",
+      "items": { "$ref": "#/$defs/checkpoint_entry" }
+    },
     "evaluations": {
       "type": "object",
       "description": "Named evaluation entries, keyed by evaluation identifier.",
@@ -114,7 +119,7 @@
           "description": "Regular modality names this hierarchical modality applies to."
         }
       },
-      "required": ["path"],
+      "required": ["path", "used_as", "modality_type", "slot"],
       "additionalProperties": true
     },
     "dataset_split": {
@@ -133,6 +138,18 @@
         }
       },
       "additionalProperties": true
+    },
+    "checkpoint_entry": {
+      "type": "object",
+      "description": "A single saved checkpoint.",
+      "properties": {
+        "path":    { "type": "string", "description": "Filesystem path to the checkpoint file." },
+        "epoch":   { "type": "integer", "description": "Training epoch at time of save." },
+        "step":    { "type": "integer", "description": "Training step at time of save." },
+        "is_best": { "type": "boolean", "description": "Whether this is the best checkpoint. At most one entry carries this flag." }
+      },
+      "required": ["path", "epoch", "step"],
+      "additionalProperties": false
     },
     "evaluation_entry": {
       "type": "object",
