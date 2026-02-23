@@ -360,6 +360,25 @@ class Run:
         )
         self._flush_meta()
 
+    def detach(self) -> None:
+        """Disconnect from the run without changing its status.
+
+        Tears down process hooks (atexit, signals, excepthook) so this
+        process can exit without marking the run as completed or crashed.
+        Any pending meta changes (e.g. evaluation entries) are flushed
+        first.  The run's ``status``, ``end_time``, and ``duration_sec``
+        are left untouched.
+
+        Use this instead of :meth:`finish` when the run was resumed
+        solely to attach evaluations while training is still active
+        elsewhere.
+        """
+        if self._finished:
+            return
+        self._finished = True
+        self._teardown_hooks()
+        self._flush_meta()
+
     # ── context manager ───────────────────────────────────────────
 
     def __enter__(self) -> Run:
@@ -686,7 +705,11 @@ def _read_ds_crawler_descriptor(path: str) -> dict[str, Any]:
 
     try:
         cfg = load_dataset_config({"path": path})
-    except Exception:
+    except Exception as exc:
+        warnings.warn(
+            f"ds-crawler failed to load config for {path!r}: {exc}",
+            stacklevel=2,
+        )
         return {}
 
     properties = cfg.properties if isinstance(cfg.properties, dict) else {}
