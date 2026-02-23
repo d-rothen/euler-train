@@ -41,10 +41,10 @@ class Run:
         run_name: str | None = None,
         evaluations: dict[str, dict[str, Any]] | None = None,
     ) -> None:
-        resolved_dir: Path = Path(dir) if dir is not None else _infer_dir()
+        self.project_dir: Path = Path(dir) if dir is not None else _infer_dir()
         resuming = run_id is not None
         self.run_id: str = run_id if resuming else _generate_run_id()
-        self.dir = resolved_dir / "runs" / self.run_id
+        self.dir = self.project_dir / "runs" / self.run_id
 
         if resuming and not self.dir.exists():
             raise FileNotFoundError(
@@ -53,6 +53,7 @@ class Run:
             )
         self.dir.mkdir(parents=True, exist_ok=True)
 
+        self.checkpoint_dir: Path | None = None
         self._output_formats: dict[str, str] = output_formats or {}
         self._start_time = time.time()
         self._finished = False
@@ -276,6 +277,34 @@ class Run:
 
     # ── checkpoints ───────────────────────────────────────────────
 
+    def init_checkpoint_dir(self, base: str | Path | None = None) -> Path:
+        """Set up an external checkpoint directory and record it in meta.
+
+        Parameters
+        ----------
+        base:
+            Explicit base path.  When *None*, the base is resolved as:
+
+            1. ``$SCRATCH/euler_train/<project>/checkpoints``
+            2. ``<project_dir>/checkpoints`` (same volume as logs).
+
+        A subdirectory named after :attr:`run_name` (slugified) — or
+        :attr:`run_id` when no name is set — is appended automatically.
+
+        Returns the created directory path.
+        """
+        if base is not None:
+            ckpt_base = Path(base)
+        else:
+            ckpt_base = _infer_checkpoint_base(self.project_dir)
+
+        slug = _slugify(self.run_name) if self.run_name else self.run_id
+        self.checkpoint_dir = ckpt_base / slug
+        self.checkpoint_dir.mkdir(parents=True, exist_ok=True)
+        self._meta["checkpoint_dir"] = str(self.checkpoint_dir)
+        self._flush_meta()
+        return self.checkpoint_dir
+
     def save_checkpoint(
         self,
         model: Any,
@@ -285,7 +314,11 @@ class Run:
         optimizer: Any = None,
         **extra: Any,
     ) -> Path:
-        """Save a checkpoint to ``checkpoints/epoch_{N}.pt``.
+        """Save a checkpoint to ``epoch_{N}.pt``.
+
+        When :meth:`init_checkpoint_dir` has been called, checkpoints are
+        written there.  Otherwise they fall back to
+        ``<run_dir>/checkpoints/``.
 
         If *model* (or *optimizer*) exposes ``.state_dict()``, it is called
         automatically.  Extra keyword arguments are included in the saved
@@ -293,7 +326,7 @@ class Run:
         """
         import torch
 
-        ckpt_dir = self.dir / "checkpoints"
+        ckpt_dir = self.checkpoint_dir or self.dir / "checkpoints"
         ckpt_dir.mkdir(parents=True, exist_ok=True)
         path = ckpt_dir / f"epoch_{epoch}.pt"
 
@@ -472,6 +505,27 @@ def _infer_dir() -> Path:
     else:
         project = Path.cwd().name
     return base / project
+
+
+def _infer_checkpoint_base(project_dir: Path) -> Path:
+    """Derive a base directory for checkpoints.
+
+    Resolution order:
+
+    1. ``$SCRATCH/euler_train/<project>/checkpoints``
+    2. ``<project_dir>/checkpoints`` (same volume as logs).
+    """
+    scratch = os.environ.get("SCRATCH")
+    if scratch:
+        project = project_dir.name
+        return Path(scratch) / "euler_train" / project / "checkpoints"
+    return project_dir / "checkpoints"
+
+
+def _slugify(text: str) -> str:
+    """Turn *text* into a filesystem-safe slug."""
+    slug = re.sub(r"[^a-zA-Z0-9]+", "-", text).strip("-").lower()
+    return slug or "unnamed"
 
 
 def _generate_run_id() -> str:
