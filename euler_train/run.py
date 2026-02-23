@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import atexit
+import logging
 import os
 import re
 import secrets
@@ -19,6 +20,8 @@ from .outputs import save_output_tree
 from .slurm import get_slurm_info
 from .git_info import get_code_ref
 from .environment import get_run_environment
+
+log = logging.getLogger("euler_train")
 
 _DATASET_META_NAMESPACES = ("euler_loading", "euler_train")
 
@@ -123,6 +126,11 @@ class Run:
             )
         self._flush_meta()
         self._setup_hooks()
+
+        verb = "Resumed" if resuming else "Started"
+        log.info("%s run %s", verb, self.run_id)
+        log.info("  Run dir:     %s", self.dir)
+        log.info("  Project dir: %s", self.project_dir)
 
     # ── evaluations ──────────────────────────────────────────────
 
@@ -303,6 +311,7 @@ class Run:
         self.checkpoint_dir.mkdir(parents=True, exist_ok=True)
         self._meta["checkpoint_dir"] = str(self.checkpoint_dir)
         self._flush_meta()
+        log.info("Checkpoint dir: %s", self.checkpoint_dir)
         return self.checkpoint_dir
 
     def save_checkpoint(
