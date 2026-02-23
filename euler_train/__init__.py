@@ -8,7 +8,7 @@ __version__ = "0.1.0"
 
 
 def init(
-    dir: str,
+    dir: str | None = None,
     config=None,
     meta: dict | None = None,
     output_formats: dict[str, str] | None = None,
@@ -23,7 +23,14 @@ def init(
     ----------
     dir:
         Project / output directory.  Each call creates a unique run
-        under ``{dir}/runs/{timestamp_id}/``.
+        under ``{dir}/runs/{timestamp_id}/``.  When *None* (the
+        default), the directory is resolved as:
+
+        1. ``$ET_HOME/<project>`` (if ``$ET_HOME`` is set),
+        2. ``~/euler_train/<project>``,
+
+        where ``<project>`` is the git repository name, or the current
+        working directory name when not inside a git repo.
     config:
         Hyperparameters — accepts a *dict*, a path to a JSON / YAML file,
         an ``argparse.Namespace``, or a dataclass instance.

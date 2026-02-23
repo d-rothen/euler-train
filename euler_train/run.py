@@ -31,7 +31,7 @@ class Run:
 
     def __init__(
         self,
-        dir: str | Path,
+        dir: str | Path | None = None,
         config: Any = None,
         meta: dict | None = None,
         output_formats: dict[str, str] | None = None,
@@ -41,9 +41,10 @@ class Run:
         run_name: str | None = None,
         evaluations: dict[str, dict[str, Any]] | None = None,
     ) -> None:
+        resolved_dir: Path = Path(dir) if dir is not None else _infer_dir()
         resuming = run_id is not None
         self.run_id: str = run_id if resuming else _generate_run_id()
-        self.dir = Path(dir) / "runs" / self.run_id
+        self.dir = resolved_dir / "runs" / self.run_id
 
         if resuming and not self.dir.exists():
             raise FileNotFoundError(
@@ -447,6 +448,30 @@ class Run:
 
     def __repr__(self) -> str:
         return f"Run(id={self.run_id!r}, dir={str(self.dir)!r}, status={self._meta['status']!r})"
+
+
+def _infer_dir() -> Path:
+    """Derive a default output directory from the git repo name or cwd.
+
+    Returns ``<base>/<project_name>`` where *base* is resolved as:
+
+    1. ``$ET_HOME`` environment variable (if set),
+    2. ``~/euler_train`` (default).
+
+    *project_name* is the git repository name, or the current working
+    directory name when not inside a git repository.
+    """
+    et_home = os.environ.get("ET_HOME")
+    base = Path(et_home) if et_home else Path.home() / "euler_train"
+
+    from .git_info import _git
+
+    toplevel = _git("rev-parse", "--show-toplevel")
+    if toplevel is not None:
+        project = Path(toplevel).name
+    else:
+        project = Path.cwd().name
+    return base / project
 
 
 def _generate_run_id() -> str:
