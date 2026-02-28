@@ -43,6 +43,7 @@ class Run:
         datasets: dict[str, Any] | None = None,
         run_name: str | None = None,
         evaluations: dict[str, dict[str, Any]] | None = None,
+        mode: str | None = None,
     ) -> None:
         self.project_dir: Path = Path(dir) if dir is not None else _infer_dir()
         resuming = run_id is not None
@@ -64,6 +65,7 @@ class Run:
         self._gpu_available: bool | None = None  # None = not yet probed
         self._gpu_stats_every: int = gpu_stats_every
         self.run_name: str | None = run_name
+        self.mode: str | None = _normalize_mode(mode)
 
         # ── config ────────────────────────────────────────────────
         if resuming:
@@ -93,6 +95,7 @@ class Run:
                 python=sys.version.split()[0],
                 command=sys.argv,
             )
+            self._clear_terminal_fields(self._meta, status="running")
         else:
             self._meta: dict[str, Any] = {
                 "run_id": self.run_id,
@@ -124,6 +127,7 @@ class Run:
                 evaluations=evaluations,
                 existing=self._meta.get("evaluations"),
             )
+        self._mark_mode_running()
         self._flush_meta()
         self._setup_hooks()
 
@@ -395,12 +399,15 @@ class Run:
         self._finished = True
         self._teardown_hooks()
         end = time.time()
+        duration = round(end - self._start_time, 3)
         self._meta.update(
             status=status,
             end_time=end,
             end_iso=_isotime(end),
-            duration_sec=round(end - self._start_time, 3),
+            duration_sec=duration,
         )
+        self._clear_terminal_fields(self._meta, status=status)
+        self._finish_mode(status=status, end=end, duration=duration)
         self._flush_meta()
 
     def detach(self) -> None:
@@ -430,8 +437,10 @@ class Run:
     def __exit__(self, exc_type, exc_val, exc_tb) -> bool:
         if not self._finished:
             if exc_type is not None:
-                self._meta["error"] = f"{exc_type.__name__}: {exc_val}"
-                self._meta["traceback"] = traceback.format_exc()
+                self._record_terminal_error(
+                    error=f"{exc_type.__name__}: {exc_val}",
+                    tb_text=traceback.format_exc(),
+                )
                 self.finish(status="crashed")
             else:
                 self.finish()
@@ -469,9 +478,11 @@ class Run:
 
     def _on_exception(self, exc_type, exc_value, exc_tb) -> None:
         if not self._finished:
-            self._meta["error"] = f"{exc_type.__name__}: {exc_value}"
-            self._meta["traceback"] = "".join(
-                traceback.format_exception(exc_type, exc_value, exc_tb)
+            self._record_terminal_error(
+                error=f"{exc_type.__name__}: {exc_value}",
+                tb_text="".join(
+                    traceback.format_exception(exc_type, exc_value, exc_tb)
+                ),
             )
             self.finish(status="crashed")
         self._original_excepthook(exc_type, exc_value, exc_tb)
@@ -479,11 +490,87 @@ class Run:
     def _on_signal(self, signum, frame) -> None:
         if not self._finished:
             sig_name = signal.Signals(signum).name
-            self._meta["error"] = f"Signal: {sig_name}"
+            self._record_terminal_error(error=f"Signal: {sig_name}")
             self.finish(status="interrupted")
         sys.exit(128 + signum)
 
     # ── internals ─────────────────────────────────────────────────
+
+    def _mark_mode_running(self) -> None:
+        if self.mode is None:
+            return
+
+        self._modes_meta()[self.mode] = {
+            "status": "running",
+            "start_time": self._start_time,
+            "start_iso": _isotime(self._start_time),
+            "end_time": None,
+            "end_iso": None,
+            "duration_sec": None,
+            "pid": os.getpid(),
+            "command": sys.argv,
+        }
+
+    def _finish_mode(self, *, status: str, end: float, duration: float) -> None:
+        if self.mode is None:
+            return
+
+        mode_meta = self._modes_meta().get(self.mode)
+        if not isinstance(mode_meta, dict):
+            self._mark_mode_running()
+            mode_meta = self._modes_meta()[self.mode]
+
+        mode_meta.update(
+            status=status,
+            end_time=end,
+            end_iso=_isotime(end),
+            duration_sec=duration,
+        )
+        self._clear_terminal_fields(mode_meta, status=status)
+
+    def _record_terminal_error(
+        self,
+        *,
+        error: str,
+        tb_text: str | None = None,
+    ) -> None:
+        self._meta["error"] = error
+        if tb_text is None:
+            self._meta.pop("traceback", None)
+        else:
+            self._meta["traceback"] = tb_text
+
+        if self.mode is None:
+            return
+
+        mode_meta = self._modes_meta().get(self.mode)
+        if not isinstance(mode_meta, dict):
+            self._mark_mode_running()
+            mode_meta = self._modes_meta()[self.mode]
+
+        mode_meta["error"] = error
+        if tb_text is None:
+            mode_meta.pop("traceback", None)
+        else:
+            mode_meta["traceback"] = tb_text
+
+    @staticmethod
+    def _clear_terminal_fields(target: dict[str, Any], *, status: str) -> None:
+        if status in {"running", "completed"}:
+            target.pop("error", None)
+            target.pop("traceback", None)
+            return
+        if status == "interrupted":
+            target.pop("traceback", None)
+
+    def _modes_meta(self) -> dict[str, Any]:
+        modes = self._meta.get("modes")
+        if isinstance(modes, dict):
+            return modes
+
+        modes = {}
+        self._meta["modes"] = modes
+        return modes
 
     def _flush_meta(self) -> None:
         write_json(self.dir / "meta.json", self._meta)
@@ -545,6 +632,16 @@ def _generate_run_id() -> str:
 
 def _isotime(ts: float) -> str:
     return time.strftime("%Y-%m-%dT%H:%M:%S", time.localtime(ts))
+
+
+def _normalize_mode(mode: str | None) -> str | None:
+    if mode is None:
+        return None
+
+    normalized = str(mode).strip()
+    if not normalized:
+        raise ValueError("mode must be a non-empty string when provided")
+    return normalized
 
 
 def _build_datasets_meta(

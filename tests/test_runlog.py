@@ -1292,6 +1292,51 @@ class TestLifecycle:
         assert "traceback" in meta
         assert "training exploded" in meta["traceback"]
 
+    def test_mode_scopes_lifecycle_and_crash_details(self, tmp_path):
+        train_run = euler_train.init(
+            dir=str(tmp_path / "r"),
+            config={},
+            mode="train",
+        )
+        train_run.finish()
+
+        eval_run = euler_train.init(
+            dir=str(tmp_path / "r"),
+            config={},
+            run_id=train_run.run_id,
+            mode="eval",
+        )
+        eval_run._original_excepthook = lambda *args: None
+
+        try:
+            raise ValueError("eval exploded")
+        except ValueError:
+            eval_run._on_exception(*sys.exc_info())
+
+        meta = _read_json(eval_run.dir / "meta.json")
+        assert meta["status"] == "crashed"
+        assert meta["modes"]["train"]["status"] == "completed"
+        assert meta["modes"]["eval"]["status"] == "crashed"
+        assert "ValueError: eval exploded" in meta["modes"]["eval"]["error"]
+        assert "eval exploded" in meta["modes"]["eval"]["traceback"]
+
+    def test_resume_clears_previous_error_fields(self, tmp_path):
+        with pytest.raises(RuntimeError):
+            with euler_train.init(dir=str(tmp_path / "r"), config={}) as run:
+                raise RuntimeError("first failure")
+
+        resumed = euler_train.init(
+            dir=str(tmp_path / "r"),
+            config={},
+            run_id=run.run_id,
+        )
+        resumed.finish()
+
+        meta = _read_json(resumed.dir / "meta.json")
+        assert meta["status"] == "completed"
+        assert "error" not in meta
+        assert "traceback" not in meta
+
     def test_context_manager_does_not_suppress_exception(self, tmp_path):
         with pytest.raises(ValueError, match="boom"):
             with euler_train.init(dir=str(tmp_path / "r"), config={}):
@@ -1347,6 +1392,7 @@ class TestInterruptHandling:
         meta = _read_json(run.dir / "meta.json")
         assert meta["status"] == "interrupted"
         assert "SIGINT" in meta["error"]
+        assert "traceback" not in meta
 
     def test_excepthook_marks_crashed(self, tmp_path):
         run = euler_train.init(dir=str(tmp_path / "r"), config={})

@@ -16,6 +16,7 @@ def init(
     datasets: dict | None = None,
     run_name: str | None = None,
     evaluations: dict[str, dict] | None = None,
+    mode: str | None = None,
 ) -> Run:
     """Create a new run — or resume an existing one — and return the handle.
 
@@ -67,10 +68,15 @@ def init(
         *datasets*), ``name``, ``status``, ``checkpoint``, and
         ``metadata``.  Typically used when resuming a run (via *run_id*)
         for evaluation.  See also :meth:`Run.add_evaluation`.
+    mode:
+        Optional label for the current process context (for example
+        ``"train"``, ``"val"``, or ``"eval"``).  When provided,
+        lifecycle fields and crash details are mirrored into
+        ``meta.json`` under ``modes[mode]``.
     """
     return Run(
         dir=dir, config=config, meta=meta,
         output_formats=output_formats, run_id=run_id,
         datasets=datasets, run_name=run_name,
-        evaluations=evaluations,
+        evaluations=evaluations, mode=mode,
     )

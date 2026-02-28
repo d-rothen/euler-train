@@ -80,7 +80,7 @@ The run ID and directory are available as `run.run_id` and `run.dir`.
 
 ## API reference
 
-### `euler_train.init(dir, config=None, meta=None, output_formats=None, run_id=None, datasets=None, run_name=None, evaluations=None) → Run`
+### `euler_train.init(dir, config=None, meta=None, output_formats=None, run_id=None, datasets=None, run_name=None, evaluations=None, mode=None) → Run`
 
 Creates the run directory and writes `meta.json`, `config.json`, `code_ref.json`, and `run_environment.json`. On resume (`run_id` provided), only `meta.json` and `config.json` are updated.
 
@@ -94,6 +94,7 @@ Creates the run directory and writes `meta.json`, `config.json`, `code_ref.json`
 | `datasets` | `dict[str, Any] \| None` | Optional split → dataset map. If a dataset exposes `describe_for_runlog()`, that contract is used directly; otherwise euler_train infers structured modality metadata (`path`, `used_as`, `slot`, `modality_type`, and hierarchical fields), resolving fixed namespaced properties from `properties.euler_loading` and `properties.euler_train` before heuristics. |
 | `run_name` | `str \| None` | Optional human-readable run label stored in `meta.json`. |
 | `evaluations` | `dict[str, dict] \| None` | Optional evaluation key → entry map. See [Evaluations](#evaluations). |
+| `mode` | `str \| None` | Optional process label such as `"train"`, `"val"`, or `"eval"`. When set, lifecycle and crash details are also written under `meta.json["modes"][mode]`. |
 
 ---
 
@@ -294,6 +295,30 @@ Auto-managed, not written to directly.
       }
     }
   },
+  "modes": {
+    "train": {
+      "status": "completed",
+      "start_time": 1706400000.0,
+      "start_iso": "2025-01-28T15:30:42",
+      "end_time": 1706403000.0,
+      "end_iso": "2025-01-28T16:20:42",
+      "duration_sec": 3000.0,
+      "pid": 12345,
+      "command": ["train.py", "--lr", "1e-4"]
+    },
+    "eval": {
+      "status": "crashed",
+      "start_time": 1706403200.0,
+      "start_iso": "2025-01-28T16:23:20",
+      "end_time": 1706403300.0,
+      "end_iso": "2025-01-28T16:25:00",
+      "duration_sec": 100.0,
+      "pid": 12399,
+      "command": ["eval.py", "--ckpt", "epoch_12.pt"],
+      "error": "RuntimeError: CUDA OOM",
+      "traceback": "Traceback (most recent call last):\n  ..."
+    }
+  },
   "error": "RuntimeError: CUDA OOM",
   "traceback": "Traceback (most recent call last):\n  ..."
 }
@@ -303,7 +328,8 @@ Auto-managed, not written to directly.
 - `slurm` is `null` when not running under SLURM.
 - `datasets` is only present when `datasets=...` is passed to `euler_train.init`.
 - `evaluations` is only present when evaluations are provided via `evaluations=...` on `init()` or added via `run.add_evaluation()`.
-- `error` and `traceback` are only present when `status` is `"crashed"` (context manager / excepthook) or `"interrupted"` (SIGTERM/SIGINT).
+- `modes` is only present when `mode=...` is passed to `euler_train.init`; each key stores the latest lifecycle snapshot for that mode.
+- `error` is only present when `status` is `"crashed"` (context manager / excepthook) or `"interrupted"` (SIGTERM/SIGINT). `traceback` is only present when `status` is `"crashed"`. When `mode=...` is set, the same fields are mirrored under `modes[mode]`.
 
 A formal JSON Schema for `meta.json` is available at [`meta-schema.json`](meta-schema.json).
 

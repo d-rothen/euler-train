@@ -58,6 +58,13 @@
       "type": "string",
       "description": "Full Python traceback. Present when status is \"crashed\"."
     },
+    "modes": {
+      "type": "object",
+      "description": "Optional per-mode lifecycle summaries keyed by the init(mode=...) label.",
+      "additionalProperties": {
+        "$ref": "#/$defs/mode_entry"
+      }
+    },
     "slurm": {
       "type": ["object", "null"],
       "description": "SLURM job metadata. Null when not running under SLURM.",
@@ -150,6 +157,56 @@
       },
       "required": ["path", "epoch", "step"],
       "additionalProperties": false
+    },
+    "mode_entry": {
+      "type": "object",
+      "description": "Lifecycle summary for a single init(mode=...) context.",
+      "properties": {
+        "status": {
+          "type": "string",
+          "enum": ["running", "completed", "crashed", "interrupted"],
+          "description": "Current lifecycle status for this mode."
+        },
+        "start_time": {
+          "type": "number",
+          "description": "Unix timestamp when this mode was started."
+        },
+        "start_iso": {
+          "type": "string",
+          "description": "ISO 8601 formatted start time (local) for this mode."
+        },
+        "end_time": {
+          "type": ["number", "null"],
+          "description": "Unix timestamp when this mode finished. Null while running."
+        },
+        "end_iso": {
+          "type": ["string", "null"],
+          "description": "ISO 8601 formatted end time for this mode. Null while running."
+        },
+        "duration_sec": {
+          "type": ["number", "null"],
+          "description": "Wall-clock duration in seconds for this mode. Null while running."
+        },
+        "pid": {
+          "type": "integer",
+          "description": "Process ID of the process that most recently entered this mode."
+        },
+        "command": {
+          "type": "array",
+          "items": { "type": "string" },
+          "description": "The full sys.argv command line for this mode."
+        },
+        "error": {
+          "type": "string",
+          "description": "Error summary for this mode. Present when status is \"crashed\" or \"interrupted\"."
+        },
+        "traceback": {
+          "type": "string",
+          "description": "Full Python traceback for this mode. Present when status is \"crashed\"."
+        }
+      },
+      "required": ["status", "start_time", "start_iso", "pid", "command"],
+      "additionalProperties": true
     },
     "evaluation_entry": {
       "type": "object",
