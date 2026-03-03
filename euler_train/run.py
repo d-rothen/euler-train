@@ -390,6 +390,43 @@ class Run:
         self._meta["checkpoints"] = checkpoints
         self._flush_meta()
 
+    # ── architecture export ─────────────────────────────────────────
+
+    def log_architecture(
+        self,
+        model: Any,
+        dummy_input: Any,
+    ) -> Path:
+        """Export the model architecture to a lightweight ONNX file.
+
+        The resulting ``architecture.onnx`` is optimized for Netron:
+        redundant nodes are removed, operator fusions are applied, and
+        weight tensors are stripped so only the graph topology remains.
+
+        Requires the ``[architecture]`` optional dependencies
+        (``onnx``, ``onnxruntime``, ``onnxsim``).
+
+        Parameters
+        ----------
+        model:
+            A PyTorch ``nn.Module``.
+        dummy_input:
+            Example input tensor(s) matching the model's forward signature.
+
+        Returns
+        -------
+        Path
+            Path to the saved ``architecture.onnx`` file.
+        """
+        from .architecture import export_architecture
+
+        output_path = export_architecture(
+            model, dummy_input, self.dir / "architecture.onnx"
+        )
+        self._meta["architecture"] = "architecture.onnx"
+        self._flush_meta()
+        return output_path
+
     # ── lifecycle ─────────────────────────────────────────────────
 
     def finish(self, status: str = "completed") -> None:

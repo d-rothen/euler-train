@@ -2,8 +2,9 @@
 from __future__ import annotations
 
 from .run import Run
+from .architecture import export_architecture
 
-__all__ = ["init", "Run"]
+__all__ = ["init", "Run", "export_architecture"]
 __version__ = "0.1.0"
 
 
