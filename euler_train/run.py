@@ -45,6 +45,19 @@ class Run:
         evaluations: dict[str, dict[str, Any]] | None = None,
         mode: str | None = None,
     ) -> None:
+        # ── detect run-directory shorthand ────────────────────────
+        # When `dir` points to an existing run directory (contains
+        # meta.json) and no explicit `run_id` is provided, treat it
+        # as a resume: extract run_id from meta.json and derive the
+        # project directory from the path.
+        if dir is not None and run_id is None:
+            candidate = Path(dir)
+            meta_file = candidate / "meta.json"
+            if meta_file.is_file():
+                existing_meta = read_json(meta_file)
+                run_id = existing_meta.get("run_id", candidate.name)
+                dir = candidate.parent.parent
+
         self.project_dir: Path = Path(dir) if dir is not None else _infer_dir()
         resuming = run_id is not None
         self.run_id: str = run_id if resuming else _generate_run_id()

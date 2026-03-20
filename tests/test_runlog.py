@@ -164,6 +164,69 @@ class TestInit:
         run1.finish()
         run2.finish()
 
+    def test_resume_from_run_directory(self, tmp_path):
+        """Passing a full run directory (with meta.json) auto-resumes."""
+        run = euler_train.init(dir=str(tmp_path / "proj"), config={"lr": 0.1})
+        run_dir = run.dir
+        run_id = run.run_id
+        run.finish()
+
+        # Resume by passing the run directory directly
+        resumed = euler_train.init(dir=str(run_dir))
+        assert resumed.run_id == run_id
+        assert resumed.dir == run_dir
+        assert resumed.project_dir == tmp_path / "proj"
+
+        meta = _read_json(resumed.dir / "meta.json")
+        assert meta["status"] == "running"
+        resumed.finish()
+
+    def test_resume_from_run_directory_preserves_config(self, tmp_path):
+        """Resuming via run directory loads the existing config."""
+        run = euler_train.init(dir=str(tmp_path / "proj"), config={"lr": 0.01})
+        run_dir = run.dir
+        run.finish()
+
+        resumed = euler_train.init(dir=str(run_dir))
+        assert resumed.config == {"lr": 0.01}
+        resumed.finish()
+
+    def test_resume_from_run_directory_with_config_override(self, tmp_path):
+        """Resuming via run directory allows overriding config."""
+        run = euler_train.init(dir=str(tmp_path / "proj"), config={"lr": 0.01})
+        run_dir = run.dir
+        run.finish()
+
+        resumed = euler_train.init(dir=str(run_dir), config={"lr": 0.001})
+        assert resumed.config["lr"] == 0.001
+        resumed.finish()
+
+    def test_explicit_run_id_takes_precedence_over_detection(self, tmp_path):
+        """When run_id is given, dir is not treated as a run directory."""
+        run1 = euler_train.init(dir=str(tmp_path / "proj"), config={})
+        run1.finish()
+        run2 = euler_train.init(dir=str(tmp_path / "proj"), config={})
+        run2.finish()
+
+        # Resume run2 explicitly even though we pass run1's dir
+        # (this would be unusual but tests that explicit run_id wins)
+        resumed = euler_train.init(
+            dir=str(tmp_path / "proj"),
+            run_id=run2.run_id,
+        )
+        assert resumed.run_id == run2.run_id
+        resumed.finish()
+
+    def test_dir_without_meta_json_creates_new_run(self, tmp_path):
+        """A directory without meta.json is treated as a project dir."""
+        project = tmp_path / "proj"
+        project.mkdir()
+
+        run = euler_train.init(dir=str(project), config={})
+        assert run.project_dir == project
+        assert run.dir.parent == project / "runs"
+        run.finish()
+
 
 class TestDatasetMetadata:
     def test_prefers_dataset_describe_for_runlog_contract(

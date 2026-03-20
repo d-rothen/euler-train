@@ -33,6 +33,12 @@ def init(
 
         where ``<project>`` is the git repository name, or the current
         working directory name when not inside a git repo.
+
+        **Run-directory shorthand:** if *dir* points to an existing run
+        directory (i.e. it contains a ``meta.json`` file) and *run_id*
+        is not provided, the run is automatically resumed — the
+        ``run_id`` is read from ``meta.json`` and the project directory
+        is derived from the path (``dir/../..``).
     config:
         Hyperparameters — accepts a *dict*, a path to a JSON / YAML file,
         an ``argparse.Namespace``, or a dataclass instance.
