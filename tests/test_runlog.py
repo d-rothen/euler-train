@@ -1305,6 +1305,76 @@ class TestSaveOutputsVariants:
 
 
 # ═══════════════════════════════════════════════════════════════════════════
+#  init_checkpoint_dir
+# ═══════════════════════════════════════════════════════════════════════════
+
+class TestInitCheckpointDir:
+    def test_uses_slugified_run_name(self, tmp_path):
+        run = euler_train.init(
+            dir=str(tmp_path / "r"),
+            config={},
+            run_name="Baseline Dehaze",
+        )
+
+        path = run.init_checkpoint_dir(base=tmp_path / "external-checkpoints")
+        meta = _read_json(run.dir / "meta.json")
+
+        assert path == tmp_path / "external-checkpoints" / "baseline-dehaze"
+        assert meta["checkpoint_dir"] == str(path)
+        assert meta["run_name"] == "Baseline Dehaze"
+        run.finish()
+
+    def test_fresh_run_disambiguates_checkpoint_dir_collision(self, tmp_path):
+        import euler_train.run as run_module
+
+        existing = tmp_path / "external-checkpoints" / "baseline-dehaze"
+        existing.mkdir(parents=True)
+        (existing / "epoch_0.pt").write_text("old checkpoint")
+
+        run = euler_train.init(
+            dir=str(tmp_path / "r"),
+            config={},
+            run_name="Baseline Dehaze",
+        )
+
+        path = run.init_checkpoint_dir(base=tmp_path / "external-checkpoints")
+        meta = _read_json(run.dir / "meta.json")
+
+        assert path != existing
+        assert path == tmp_path / "external-checkpoints" / (
+            f"baseline-dehaze-{run_module._slugify(run.run_id)}"
+        )
+        assert meta["checkpoint_dir"] == str(path)
+        assert meta["run_name"] == "Baseline Dehaze"
+        run.finish()
+
+    def test_resume_reuses_recorded_checkpoint_dir(self, tmp_path):
+        model = torch.nn.Linear(4, 2)
+
+        run = euler_train.init(
+            dir=str(tmp_path / "r"),
+            config={},
+            run_name="Baseline Dehaze",
+        )
+        checkpoint_dir = run.init_checkpoint_dir(base=tmp_path / "external-checkpoints")
+        run.save_checkpoint(model, epoch=1, step=100)
+        run.finish()
+
+        resumed = euler_train.init(
+            dir=str(tmp_path / "r"),
+            run_id=run.run_id,
+        )
+
+        assert resumed.run_name == "Baseline Dehaze"
+        assert resumed.checkpoint_dir == checkpoint_dir
+        assert resumed.init_checkpoint_dir(base=tmp_path / "ignored") == checkpoint_dir
+
+        path = resumed.save_checkpoint(model, epoch=2, step=200)
+        assert path.parent == checkpoint_dir
+        resumed.finish()
+
+
+# ═══════════════════════════════════════════════════════════════════════════
 #  save_checkpoint
 # ═══════════════════════════════════════════════════════════════════════════
 

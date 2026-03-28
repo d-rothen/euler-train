@@ -147,9 +147,27 @@ Pass `None` for any slot or output type to skip it.
 
 ---
 
+### `run.init_checkpoint_dir(base=None) → Path`
+
+Sets up an external checkpoint directory and records it in `meta.json["checkpoint_dir"]`.
+
+When `base` is omitted, euler_train resolves it as:
+
+1. `$SCRATCH/euler_train/<project>/checkpoints`
+2. `<project_dir>/checkpoints`
+
+The final leaf directory is the slugified `run_name`, or `run_id` when no name is set. Fresh runs auto-disambiguate collisions by appending a suffix derived from `run_id`. Resumed runs reuse the recorded `checkpoint_dir` automatically.
+
+```python
+ckpt_dir = run.init_checkpoint_dir()
+run.save_checkpoint(model, epoch=5, step=2000, optimizer=opt)
+```
+
+---
+
 ### `run.save_checkpoint(model, *, epoch, optimizer=None, **extra) → Path`
 
-Saves to `checkpoints/epoch_{N}.pt`. Calls `.state_dict()` on model/optimizer automatically if available. Extra keyword arguments are included in the saved dict.
+Saves to `checkpoints/epoch_{N}.pt` inside the run directory by default. If `run.init_checkpoint_dir()` has been used, checkpoints are written there instead, and resumed runs keep using the recorded external directory automatically. Calls `.state_dict()` on model/optimizer automatically if available. Extra keyword arguments are included in the saved dict.
 
 ```python
 run.save_checkpoint(model, epoch=5, optimizer=opt, best_loss=0.12)

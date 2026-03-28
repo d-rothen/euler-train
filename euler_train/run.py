@@ -60,6 +60,7 @@ class Run:
 
         self.project_dir: Path = Path(dir) if dir is not None else _infer_dir()
         resuming = run_id is not None
+        self._resuming = resuming
         self.run_id: str = run_id if resuming else _generate_run_id()
         self.dir = self.project_dir / "runs" / self.run_id
 
@@ -126,6 +127,14 @@ class Run:
             }
         if meta:
             self._meta.update(meta)
+
+        meta_run_name = self._meta.get("run_name")
+        if isinstance(meta_run_name, str) or meta_run_name is None:
+            self.run_name = meta_run_name
+
+        checkpoint_dir = self._meta.get("checkpoint_dir")
+        if isinstance(checkpoint_dir, str) and checkpoint_dir.strip():
+            self.checkpoint_dir = Path(checkpoint_dir)
 
         # ── datasets (optional euler_loading integration) ────────
         if datasets is not None:
@@ -315,16 +324,31 @@ class Run:
 
         A subdirectory named after :attr:`run_name` (slugified) — or
         :attr:`run_id` when no name is set — is appended automatically.
+        Fresh runs auto-disambiguate collisions by appending a suffix
+        derived from :attr:`run_id`. Resumed runs reuse the recorded
+        ``checkpoint_dir`` when available.
 
         Returns the created directory path.
         """
+        if self.checkpoint_dir is not None:
+            self.checkpoint_dir.mkdir(parents=True, exist_ok=True)
+            self._meta["checkpoint_dir"] = str(self.checkpoint_dir)
+            self._flush_meta()
+            log.info("Checkpoint dir: %s", self.checkpoint_dir)
+            return self.checkpoint_dir
+
         if base is not None:
             ckpt_base = Path(base)
         else:
             ckpt_base = _infer_checkpoint_base(self.project_dir)
 
-        slug = _slugify(self.run_name) if self.run_name else self.run_id
+        slug = _checkpoint_dir_slug(self.run_name, self.run_id)
         self.checkpoint_dir = ckpt_base / slug
+        if not self._resuming:
+            self.checkpoint_dir = _disambiguate_path(
+                self.checkpoint_dir,
+                suffix=_slugify(self.run_id),
+            )
         self.checkpoint_dir.mkdir(parents=True, exist_ok=True)
         self._meta["checkpoint_dir"] = str(self.checkpoint_dir)
         self._flush_meta()
@@ -666,6 +690,24 @@ def _infer_checkpoint_base(project_dir: Path) -> Path:
         project = project_dir.name
         return Path(scratch) / "euler_train" / project / "checkpoints"
     return project_dir / "checkpoints"
+
+
+def _checkpoint_dir_slug(run_name: str | None, run_id: str) -> str:
+    """Return the preferred leaf name for a checkpoint directory."""
+    return _slugify(run_name) if run_name else run_id
+
+
+def _disambiguate_path(path: Path, *, suffix: str) -> Path:
+    """Return *path* or a collision-free sibling with *suffix* appended."""
+    if not path.exists():
+        return path
+
+    candidate = path.with_name(f"{path.name}-{suffix}")
+    counter = 2
+    while candidate.exists():
+        candidate = path.with_name(f"{path.name}-{suffix}-{counter}")
+        counter += 1
+    return candidate
 
 
 def _slugify(text: str) -> str:
