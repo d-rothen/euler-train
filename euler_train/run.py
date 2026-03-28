@@ -1001,12 +1001,9 @@ def _read_ds_crawler_descriptor(path: str) -> dict[str, Any]:
 
     try:
         cfg = load_dataset_config({"path": path})
-    except Exception as exc:
-        warnings.warn(
-            f"ds-crawler failed to load config for {path!r}: {exc}",
-            stacklevel=2,
-        )
-        return {}
+    except Exception:
+        # No ds-crawler.json — try reading output.json as fallback.
+        return _read_ds_crawler_output_fallback(path)
 
     properties = cfg.properties if isinstance(cfg.properties, dict) else {}
     descriptor: dict[str, Any] = {"properties": dict(properties)}
@@ -1016,6 +1013,57 @@ def _read_ds_crawler_descriptor(path: str) -> dict[str, Any]:
         descriptor["modality_type"] = cfg_type
 
     hierarchy_regex = _as_non_empty_str(getattr(cfg, "hierarchy_regex", None))
+    if hierarchy_regex is not None:
+        descriptor["hierarchy_regex"] = hierarchy_regex
+
+    return descriptor
+
+
+def _read_ds_crawler_output_fallback(path: str) -> dict[str, Any]:
+    """Read properties from output.json when ds-crawler.json is absent.
+
+    ds_crawler's ``DatasetDescriptor.from_output`` intentionally excludes
+    ``euler_train`` from ``.properties`` (it is a structural output key).
+    We reconstruct the namespaced properties dict ourselves so that
+    ``_properties_with_namespaces`` can resolve them.
+    """
+    try:
+        from pathlib import Path as _Path
+        from ds_crawler.schema import DatasetDescriptor
+        from ds_crawler.zip_utils import read_metadata_json
+    except Exception:
+        return {}
+
+    try:
+        raw = read_metadata_json(_Path(path), "output.json")
+    except Exception:
+        return {}
+
+    if isinstance(raw, list):
+        if len(raw) != 1:
+            return {}
+        raw = raw[0]
+
+    if not isinstance(raw, dict):
+        return {}
+
+    desc = DatasetDescriptor.from_output(raw, path=path)
+
+    # from_output strips euler_train/euler_loading as structural output keys;
+    # re-add the namespace blocks that _properties_with_namespaces expects.
+    properties: dict[str, Any] = dict(desc.properties)
+    for ns in _DATASET_META_NAMESPACES:
+        if ns not in properties:
+            ns_val = raw.get(ns)
+            if isinstance(ns_val, dict):
+                properties[ns] = ns_val
+
+    descriptor: dict[str, Any] = {"properties": properties}
+
+    if desc.type:
+        descriptor["modality_type"] = desc.type
+
+    hierarchy_regex = _as_non_empty_str(raw.get("hierarchy_regex"))
     if hierarchy_regex is not None:
         descriptor["hierarchy_regex"] = hierarchy_regex
 

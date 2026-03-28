@@ -569,6 +569,67 @@ class TestModalityFieldEnforcement:
             "modality_type": "depth",
         }
 
+    def test_output_json_fallback_when_no_ds_crawler_json(
+        self, tmp_path, monkeypatch
+    ):
+        """When ds-crawler.json is absent, properties are read from output.json."""
+        import euler_train.run as run_module
+
+        output_json_data = {
+            "/datasets/depth": [
+                {
+                    "name": "depth",
+                    "type": "depth",
+                    "euler_train": {
+                        "used_as": "target",
+                        "slot": "dehaze.target.depth",
+                        "modality_type": "depth",
+                    },
+                    "dataset": {},
+                }
+            ],
+        }
+
+        def _fake_load_dataset_config(cfg):
+            raise FileNotFoundError("no ds-crawler.json")
+
+        def _fake_read_metadata_json(path, filename):
+            return output_json_data.get(str(path), [])
+
+        monkeypatch.setattr(
+            run_module, "_read_ds_crawler_descriptor",
+            run_module._read_ds_crawler_descriptor,  # use the real one
+        )
+
+        import ds_crawler
+        monkeypatch.setattr(ds_crawler, "load_dataset_config", _fake_load_dataset_config)
+
+        from ds_crawler import zip_utils
+        monkeypatch.setattr(zip_utils, "read_metadata_json", _fake_read_metadata_json)
+
+        contract = {
+            "modalities": {
+                "depth": {
+                    "path": "/datasets/depth",
+                }
+            },
+            "hierarchical_modalities": {},
+        }
+        ds = _DatasetWithRunlogDescription(contract)
+        run = euler_train.init(
+            dir=str(tmp_path / "r"), config={},
+            datasets={"train": ds},
+        )
+        meta = _read_json(run.dir / "meta.json")
+        run.finish()
+
+        assert meta["datasets"]["train"]["modalities"]["depth"] == {
+            "path": "/datasets/depth",
+            "used_as": "target",
+            "slot": "dehaze.target.depth",
+            "modality_type": "depth",
+        }
+
     def test_warning_on_heuristic_used_as(self, tmp_path, monkeypatch):
         import euler_train.run as run_module
 
