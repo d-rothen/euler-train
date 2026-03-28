@@ -502,13 +502,17 @@ class TestModalityFieldEnforcement:
                 datasets={"train": ds},
             )
 
-    def test_contract_missing_required_field_raises(self, tmp_path):
+    def test_contract_missing_required_field_raises(self, tmp_path, monkeypatch):
+        import euler_train.run as run_module
+
+        monkeypatch.setattr(run_module, "_read_ds_crawler_descriptor", lambda path: {})
+
         contract = {
             "modalities": {
-                "rgb_pred": {
-                    "path": "/mnt/ds/preds/rgb",
+                "mystery_data": {
+                    "path": "/mnt/ds/preds/data",
                     "used_as": "output",
-                    # missing modality_type and slot
+                    # missing modality_type and slot; name/path have no heuristic match
                 }
             },
             "hierarchical_modalities": {},
@@ -519,6 +523,51 @@ class TestModalityFieldEnforcement:
                 dir=str(tmp_path / "r"), config={},
                 datasets={"train": ds},
             )
+
+    def test_contract_enriched_from_ds_crawler(self, tmp_path, monkeypatch):
+        """Incomplete contract entries are filled from ds_crawler properties."""
+        import euler_train.run as run_module
+
+        descriptors = {
+            "/datasets/depth": {
+                "modality_type": "depth",
+                "properties": {
+                    "euler_train": {
+                        "used_as": "target",
+                        "slot": "dehaze.target.depth",
+                    }
+                },
+            },
+        }
+        monkeypatch.setattr(
+            run_module,
+            "_read_ds_crawler_descriptor",
+            lambda path: descriptors.get(path, {}),
+        )
+
+        # Contract provides only the path — the rest should come from ds_crawler
+        contract = {
+            "modalities": {
+                "depth": {
+                    "path": "/datasets/depth",
+                }
+            },
+            "hierarchical_modalities": {},
+        }
+        ds = _DatasetWithRunlogDescription(contract)
+        run = euler_train.init(
+            dir=str(tmp_path / "r"), config={},
+            datasets={"train": ds},
+        )
+        meta = _read_json(run.dir / "meta.json")
+        run.finish()
+
+        assert meta["datasets"]["train"]["modalities"]["depth"] == {
+            "path": "/datasets/depth",
+            "used_as": "target",
+            "slot": "dehaze.target.depth",
+            "modality_type": "depth",
+        }
 
     def test_warning_on_heuristic_used_as(self, tmp_path, monkeypatch):
         import euler_train.run as run_module

@@ -754,9 +754,70 @@ def _validate_modality_entries(entries: dict[str, dict[str, Any]]) -> None:
                 )
 
 
+def _enrich_contract_entries(
+    entries: dict[str, dict[str, Any]],
+    ds_crawler_cache: dict[str, dict[str, Any]],
+    *,
+    is_hierarchical: bool,
+) -> None:
+    """Fill missing required fields in contract entries from ds_crawler."""
+    for name, entry in entries.items():
+        missing = [f for f in _REQUIRED_MODALITY_FIELDS if not entry.get(f)]
+        if not missing:
+            continue
+
+        path = entry.get("path")
+        if not path:
+            continue
+
+        descriptor = _get_ds_crawler_descriptor(path, ds_crawler_cache)
+        properties = _properties_with_namespaces(descriptor.get("properties"))
+
+        if "used_as" in missing:
+            used_as, _ = _infer_used_as(
+                name=name,
+                properties=properties,
+                is_hierarchical=is_hierarchical,
+            )
+            if used_as:
+                entry["used_as"] = used_as
+
+        if "modality_type" in missing:
+            modality_type, _ = _infer_modality_type(
+                name=name,
+                path=path,
+                descriptor=descriptor,
+                properties=properties,
+            )
+            if modality_type:
+                entry["modality_type"] = modality_type
+
+        if "slot" in missing:
+            used_as_val = entry.get("used_as")
+            modality_type_val = entry.get("modality_type")
+            if used_as_val and modality_type_val:
+                slot = _infer_slot(
+                    name=name,
+                    used_as=used_as_val,
+                    modality_type=modality_type_val,
+                    properties=properties,
+                )
+                if slot:
+                    entry["slot"] = slot
+
+
 def _describe_dataset(dataset: Any) -> dict[str, Any]:
     described = _describe_dataset_via_contract(dataset)
     if described is not None:
+        ds_crawler_cache: dict[str, dict[str, Any]] = {}
+        _enrich_contract_entries(
+            described.get("modalities", {}), ds_crawler_cache,
+            is_hierarchical=False,
+        )
+        _enrich_contract_entries(
+            described.get("hierarchical_modalities", {}), ds_crawler_cache,
+            is_hierarchical=True,
+        )
         _validate_modality_entries(described.get("modalities", {}))
         _validate_modality_entries(described.get("hierarchical_modalities", {}))
         return described
