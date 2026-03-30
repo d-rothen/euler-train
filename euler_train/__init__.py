@@ -1,6 +1,7 @@
 """runlog — lightweight file-based experiment logging."""
 from __future__ import annotations
 
+from . import _dataset_contract  # noqa: F401
 from .run import Run
 from .architecture import export_architecture
 

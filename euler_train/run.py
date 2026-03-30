@@ -1037,7 +1037,7 @@ def _get_ds_crawler_descriptor(
 
 def _read_ds_crawler_descriptor(path: str) -> dict[str, Any]:
     try:
-        from ds_crawler import load_dataset_config
+        from ds_crawler import get_dataset_contract, load_dataset_config
     except Exception:
         return {}
 
@@ -1047,12 +1047,21 @@ def _read_ds_crawler_descriptor(path: str) -> dict[str, Any]:
         # No ds-crawler.json — try reading output.json as fallback.
         return _read_ds_crawler_output_fallback(path)
 
-    properties = cfg.properties if isinstance(cfg.properties, dict) else {}
-    descriptor: dict[str, Any] = {"properties": dict(properties)}
+    descriptor: dict[str, Any] = {}
+    try:
+        contract = get_dataset_contract(path)
+    except Exception:
+        contract = None
+    if contract is not None:
+        descriptor["properties"] = contract.to_properties_dict()
+        descriptor["modality_key"] = contract.modality_key
+    else:
+        properties = cfg.properties if isinstance(cfg.properties, dict) else {}
+        descriptor["properties"] = dict(properties)
 
     cfg_type = _as_non_empty_str(getattr(cfg, "type", None))
     if cfg_type is not None:
-        descriptor["modality_type"] = cfg_type
+        descriptor["modality_key"] = cfg_type
 
     hierarchy_regex = _as_non_empty_str(getattr(cfg, "hierarchy_regex", None))
     if hierarchy_regex is not None:
@@ -1071,7 +1080,7 @@ def _read_ds_crawler_output_fallback(path: str) -> dict[str, Any]:
     """
     try:
         from pathlib import Path as _Path
-        from ds_crawler.schema import DatasetDescriptor
+        from ds_crawler import get_dataset_contract
         from ds_crawler.zip_utils import read_metadata_json
     except Exception:
         return {}
@@ -1089,25 +1098,24 @@ def _read_ds_crawler_output_fallback(path: str) -> dict[str, Any]:
     if not isinstance(raw, dict):
         return {}
 
-    desc = DatasetDescriptor.from_output(raw, path=path)
+    descriptor: dict[str, Any] = {}
+    try:
+        contract = get_dataset_contract(raw)
+    except Exception:
+        contract = None
+    if contract is not None:
+        descriptor["properties"] = contract.to_properties_dict()
+        descriptor["modality_key"] = contract.modality_key
+    else:
+        descriptor["properties"] = {}
 
-    # from_output strips euler_train/euler_loading as structural output keys;
-    # re-add the namespace blocks that _properties_with_namespaces expects.
-    properties: dict[str, Any] = dict(desc.properties)
-    for ns in _DATASET_META_NAMESPACES:
-        if ns not in properties:
-            ns_val = raw.get(ns)
-            if isinstance(ns_val, dict):
-                properties[ns] = ns_val
-
-    descriptor: dict[str, Any] = {"properties": properties}
-
-    if desc.type:
-        descriptor["modality_type"] = desc.type
-
-    hierarchy_regex = _as_non_empty_str(raw.get("hierarchy_regex"))
-    if hierarchy_regex is not None:
-        descriptor["hierarchy_regex"] = hierarchy_regex
+    indexing = raw.get("indexing")
+    if isinstance(indexing, Mapping):
+        hierarchy = indexing.get("hierarchy")
+        if isinstance(hierarchy, Mapping):
+            hierarchy_regex = _as_non_empty_str(hierarchy.get("regex"))
+            if hierarchy_regex is not None:
+                descriptor["hierarchy_regex"] = hierarchy_regex
 
     return descriptor
 
@@ -1255,6 +1263,10 @@ def _infer_modality_type(
     properties: list[Mapping[str, Any]],
 ) -> tuple[str | None, bool]:
     """Return ``(value, is_explicit)``."""
+    explicit = _as_non_empty_str(descriptor.get("modality_key"))
+    if explicit is not None:
+        return explicit, True
+
     explicit = _as_non_empty_str(descriptor.get("modality_type"))
     if explicit is not None:
         return explicit, True
