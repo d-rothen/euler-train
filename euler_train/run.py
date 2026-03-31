@@ -1044,8 +1044,14 @@ def _read_ds_crawler_descriptor(path: str) -> dict[str, Any]:
     try:
         cfg = load_dataset_config({"path": path})
     except Exception:
-        # No ds-crawler.json — try reading output.json as fallback.
-        return _read_ds_crawler_output_fallback(path)
+        try:
+            contract = get_dataset_contract(path)
+        except Exception:
+            return {}
+        return {
+            "properties": contract.to_properties_dict(),
+            "modality_key": contract.modality_key,
+        }
 
     descriptor: dict[str, Any] = {}
     try:
@@ -1066,56 +1072,6 @@ def _read_ds_crawler_descriptor(path: str) -> dict[str, Any]:
     hierarchy_regex = _as_non_empty_str(getattr(cfg, "hierarchy_regex", None))
     if hierarchy_regex is not None:
         descriptor["hierarchy_regex"] = hierarchy_regex
-
-    return descriptor
-
-
-def _read_ds_crawler_output_fallback(path: str) -> dict[str, Any]:
-    """Read properties from output.json when ds-crawler.json is absent.
-
-    ds_crawler's ``DatasetDescriptor.from_output`` intentionally excludes
-    ``euler_train`` from ``.properties`` (it is a structural output key).
-    We reconstruct the namespaced properties dict ourselves so that
-    ``_properties_with_namespaces`` can resolve them.
-    """
-    try:
-        from pathlib import Path as _Path
-        from ds_crawler import get_dataset_contract
-        from ds_crawler.zip_utils import read_metadata_json
-    except Exception:
-        return {}
-
-    try:
-        raw = read_metadata_json(_Path(path), "output.json")
-    except Exception:
-        return {}
-
-    if isinstance(raw, list):
-        if len(raw) != 1:
-            return {}
-        raw = raw[0]
-
-    if not isinstance(raw, dict):
-        return {}
-
-    descriptor: dict[str, Any] = {}
-    try:
-        contract = get_dataset_contract(raw)
-    except Exception:
-        contract = None
-    if contract is not None:
-        descriptor["properties"] = contract.to_properties_dict()
-        descriptor["modality_key"] = contract.modality_key
-    else:
-        descriptor["properties"] = {}
-
-    indexing = raw.get("indexing")
-    if isinstance(indexing, Mapping):
-        hierarchy = indexing.get("hierarchy")
-        if isinstance(hierarchy, Mapping):
-            hierarchy_regex = _as_non_empty_str(hierarchy.get("regex"))
-            if hierarchy_regex is not None:
-                descriptor["hierarchy_regex"] = hierarchy_regex
 
     return descriptor
 
