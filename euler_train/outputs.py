@@ -1,6 +1,7 @@
 """Save prediction / ground-truth / auxiliary outputs to disk."""
 from __future__ import annotations
 
+from collections.abc import Mapping
 from pathlib import Path
 from typing import Any
 
@@ -15,6 +16,7 @@ def save_output_tree(
     type_dir: Path,
     slots: dict[str, Any],
     format_overrides: dict[str, str],
+    visualization_overrides: dict[str, Any],
     output_type: str,
 ) -> None:
     """Persist all slots (pred, gt, input, aux/…) for one *output_type*.
@@ -35,13 +37,21 @@ def save_output_tree(
                 if aux_data is None:
                     continue
                 _save_slot(
-                    type_dir / "aux" / aux_name, aux_data,
-                    output_type, aux_name, format_overrides,
+                    type_dir / "aux" / aux_name,
+                    aux_data,
+                    output_type,
+                    aux_name,
+                    format_overrides,
+                    visualization_overrides,
                 )
         else:
             _save_slot(
-                type_dir / slot_name, data,
-                output_type, slot_name, format_overrides,
+                type_dir / slot_name,
+                data,
+                output_type,
+                slot_name,
+                format_overrides,
+                visualization_overrides,
             )
 
 
@@ -55,12 +65,16 @@ def _save_slot(
     output_type: str,
     leaf_name: str,
     format_overrides: dict[str, str],
+    visualization_overrides: dict[str, Any],
 ) -> None:
     slot_dir.mkdir(parents=True, exist_ok=True)
     items = _unpack(data)
+    visualization = _resolve_visualization(
+        output_type, leaf_name, visualization_overrides,
+    )
     for idx, item in enumerate(items):
         fmt = _resolve_format(item, output_type, leaf_name, format_overrides)
-        _save_item(slot_dir / f"{idx:04d}.{fmt}", item, fmt)
+        _save_item(slot_dir / f"{idx:04d}.{fmt}", item, fmt, visualization)
 
 
 # ---- normalisation -------------------------------------------------------
@@ -88,7 +102,12 @@ def _prepare(data: Any) -> Any:
 
     # torch Tensor → numpy, channels-first → channels-last
     if hasattr(data, "detach"):
-        arr: np.ndarray = data.detach().cpu().numpy()
+        tensor = data.detach().cpu()
+        try:
+            arr: np.ndarray = tensor.numpy()
+        except TypeError:
+            # NumPy cannot represent some torch dtypes (for example bfloat16).
+            arr = tensor.float().numpy()
         # (C, H, W) → (H, W, C)  when C looks like a channel dim
         if (
             arr.ndim == 3
@@ -119,14 +138,11 @@ def _is_image_like(arr: np.ndarray) -> bool:
     return False
 
 
-def _resolve_format(
-    item: Any,
+def _resolve_override(
     output_type: str,
     leaf_name: str,
-    overrides: dict[str, str],
-) -> str:
-    """Pick save format: check overrides (most-specific first), then infer."""
-    # "rgb.pred" > "rgb" > "pred"
+    overrides: Mapping[str, Any],
+) -> Any:
     specific = f"{output_type}.{leaf_name}"
     if specific in overrides:
         return overrides[specific]
@@ -134,6 +150,19 @@ def _resolve_format(
         return overrides[output_type]
     if leaf_name in overrides:
         return overrides[leaf_name]
+    return None
+
+
+def _resolve_format(
+    item: Any,
+    output_type: str,
+    leaf_name: str,
+    overrides: dict[str, str],
+) -> str:
+    """Pick save format: check overrides (most-specific first), then infer."""
+    override = _resolve_override(output_type, leaf_name, overrides)
+    if override is not None:
+        return str(override)
 
     # PIL Image
     try:
@@ -148,11 +177,34 @@ def _resolve_format(
     return "npy"
 
 
+def _resolve_visualization(
+    output_type: str,
+    leaf_name: str,
+    overrides: Mapping[str, Any],
+) -> dict[str, Any] | None:
+    override = _resolve_override(output_type, leaf_name, overrides)
+    if override is None:
+        return None
+    if isinstance(override, str):
+        return {"mode": override}
+    if isinstance(override, Mapping):
+        return dict(override)
+    raise TypeError(
+        "Visualization overrides must be strings or mappings, "
+        f"got {type(override)!r}",
+    )
+
+
 # ---- writers -------------------------------------------------------------
 
-def _save_item(path: Path, item: Any, fmt: str) -> None:
+def _save_item(
+    path: Path,
+    item: Any,
+    fmt: str,
+    visualization: dict[str, Any] | None = None,
+) -> None:
     if fmt == "png":
-        _save_png(path, item)
+        _save_png(path, item, visualization)
     elif fmt == "npy":
         np.save(str(path), item if isinstance(item, np.ndarray) else np.asarray(item))
     elif fmt == "npz":
@@ -164,7 +216,11 @@ def _save_item(path: Path, item: Any, fmt: str) -> None:
         raise ValueError(f"Unsupported format: {fmt!r}")
 
 
-def _save_png(path: Path, item: Any) -> None:
+def _save_png(
+    path: Path,
+    item: Any,
+    visualization: dict[str, Any] | None = None,
+) -> None:
     from PIL import Image
 
     # PIL Image — save directly
@@ -174,10 +230,9 @@ def _save_png(path: Path, item: Any) -> None:
 
     arr: np.ndarray = item
 
-    # float → [0,1] → uint8
+    # float → visualization policy → uint8
     if np.issubdtype(arr.dtype, np.floating):
-        arr = np.clip(arr, 0.0, 1.0)
-        arr = (arr * 255).astype(np.uint8)
+        arr = _render_float_png(arr, visualization)
     elif arr.dtype != np.uint8:
         arr = arr.astype(np.uint8)
 
@@ -192,3 +247,75 @@ def _save_png(path: Path, item: Any) -> None:
         Image.fromarray(plane, mode=mode).save(str(path))
     else:
         raise ValueError(f"Cannot save {arr.ndim}D array as PNG")
+
+
+def _render_float_png(
+    arr: np.ndarray,
+    visualization: dict[str, Any] | None,
+) -> np.ndarray:
+    policy = {"mode": "unit_range"}
+    if visualization is not None:
+        policy.update(visualization)
+
+    mode = str(policy.get("mode", "unit_range"))
+    finite = np.isfinite(arr)
+
+    if mode == "unit_range":
+        scaled = np.asarray(arr, dtype=np.float32)
+    elif mode == "minmax":
+        scaled = _normalize_minmax(arr, finite)
+    elif mode == "percentile":
+        pmin = float(policy.get("pmin", 1.0))
+        pmax = float(policy.get("pmax", 99.0))
+        if pmax <= pmin:
+            raise ValueError(
+                "Percentile visualization requires pmax > pmin, "
+                f"got pmin={pmin} pmax={pmax}",
+            )
+        scaled = _normalize_percentile(arr, finite, pmin, pmax)
+    elif mode == "fixed_range":
+        vmin = float(policy.get("vmin", 0.0))
+        vmax = float(policy.get("vmax", 1.0))
+        if vmax <= vmin:
+            raise ValueError(
+                "Fixed-range visualization requires vmax > vmin, "
+                f"got vmin={vmin} vmax={vmax}",
+            )
+        scaled = (np.asarray(arr, dtype=np.float32) - vmin) / (vmax - vmin)
+    else:
+        raise ValueError(f"Unsupported visualization mode: {mode!r}")
+
+    scaled = np.nan_to_num(scaled, nan=0.0, posinf=1.0, neginf=0.0)
+    if bool(policy.get("invert", False)):
+        scaled = 1.0 - scaled
+    scaled = np.clip(scaled, 0.0, 1.0)
+    return (scaled * 255).astype(np.uint8)
+
+
+def _normalize_minmax(arr: np.ndarray, finite: np.ndarray) -> np.ndarray:
+    values = arr[finite]
+    if values.size == 0:
+        return np.zeros_like(arr, dtype=np.float32)
+
+    vmin = float(values.min())
+    vmax = float(values.max())
+    if vmax <= vmin:
+        return np.zeros_like(arr, dtype=np.float32)
+    return (np.asarray(arr, dtype=np.float32) - vmin) / (vmax - vmin)
+
+
+def _normalize_percentile(
+    arr: np.ndarray,
+    finite: np.ndarray,
+    pmin: float,
+    pmax: float,
+) -> np.ndarray:
+    values = arr[finite]
+    if values.size == 0:
+        return np.zeros_like(arr, dtype=np.float32)
+
+    lo = float(np.percentile(values, pmin))
+    hi = float(np.percentile(values, pmax))
+    if hi <= lo:
+        return np.zeros_like(arr, dtype=np.float32)
+    return (np.asarray(arr, dtype=np.float32) - lo) / (hi - lo)

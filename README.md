@@ -80,7 +80,7 @@ The run ID and directory are available as `run.run_id` and `run.dir`.
 
 ## API reference
 
-### `euler_train.init(dir, config=None, meta=None, output_formats=None, run_id=None, datasets=None, run_name=None, evaluations=None, mode=None) → Run`
+### `euler_train.init(dir, config=None, meta=None, output_formats=None, output_visualization=None, run_id=None, datasets=None, run_name=None, evaluations=None, mode=None) → Run`
 
 Creates the run directory and writes `meta.json`, `config.json`, `code_ref.json`, and `run_environment.json`. On resume (`run_id` provided), only `meta.json` and `config.json` are updated.
 
@@ -90,6 +90,7 @@ Creates the run directory and writes `meta.json`, `config.json`, `code_ref.json`
 | `config` | `dict \| str \| Path \| Namespace \| dataclass` | Hyperparameters. Paths to `.json` / `.yaml` files are loaded automatically. |
 | `meta` | `dict \| None` | Extra fields merged into `meta.json` (e.g. `{"tags": ["baseline"]}`). |
 | `output_formats` | `dict[str, str] \| None` | Override format inference (see [Format inference](#format-inference)). |
+| `output_visualization` | `dict[str, Any] \| None` | Override PNG visualization policy per output type / slot (see [Output visualization](#output-visualization)). |
 | `run_id` | `str \| None` | Resume an existing run at `{dir}/runs/{run_id}` instead of creating a new one. |
 | `datasets` | `dict[str, Any] \| None` | Optional split → dataset map. If a dataset exposes `describe_for_runlog()`, that contract is used directly; otherwise euler_train infers structured modality metadata (`path`, `used_as`, `slot`, `modality_type`, and hierarchical fields), resolving fixed namespaced properties from `properties.euler_loading` and `properties.euler_train` before heuristics. |
 | `run_name` | `str \| None` | Optional human-readable run label stored in `meta.json`. |
@@ -218,7 +219,7 @@ Arrays are saved as `.png` or `.npy` based on shape and dtype:
 |---|---|
 | `uint8` with shape `(H,W)` | `.png` (grayscale) |
 | Any dtype with shape `(H,W,1)`, `(H,W,3)`, `(H,W,4)` | `.png` |
-| Float `.png` | clipped to `[0,1]`, scaled to `[0,255]` |
+| Float `.png` | defaults to `unit_range`: clip to `[0,1]`, then scale to `[0,255]` |
 | Everything else (e.g. `float32 (H,W)`) | `.npy` |
 | PIL Image | `.png` |
 
@@ -239,6 +240,33 @@ run = euler_train.init(
 ```
 
 Supported formats: `"png"`, `"npy"`, `"npz"`.
+
+## Output visualization
+
+Float PNG outputs use a rendering policy before quantization to `uint8`. Policies are configured once at `init()` via `output_visualization`, and keys resolve most-specific-first just like `output_formats`:
+
+```python
+run = euler_train.init(
+    dir="runs/exp",
+    config=cfg,
+    output_visualization={
+        "depth": {"mode": "percentile", "pmin": 1, "pmax": 99},
+        "depth.pred": {"mode": "fixed_range", "vmin": 0.0, "vmax": 80.0},
+        "confidence": "minmax",
+    },
+)
+```
+
+Supported visualization modes:
+
+| Mode | Parameters | Description |
+|---|---|---|
+| `unit_range` | none | Clip float data to `[0,1]` before saving. |
+| `minmax` | none | Normalize using the finite-value min / max of the saved item. |
+| `percentile` | `pmin`, `pmax` | Normalize using finite-value percentiles, useful for depth-like outputs. |
+| `fixed_range` | `vmin`, `vmax` | Normalize against an explicit numeric range. |
+
+All float PNG policies also accept `invert: true` to flip black ↔ white after normalization.
 
 ## `meta.json` schema
 

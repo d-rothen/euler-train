@@ -1168,6 +1168,61 @@ class TestSaveOutputsOverrides:
         run.finish()
 
 
+class TestSaveOutputsVisualization:
+    def test_fixed_range_visualization_for_single_channel_png(self, tmp_path):
+        run = euler_train.init(
+            dir=str(tmp_path / "r"),
+            config={},
+            output_visualization={
+                "depth": {"mode": "fixed_range", "vmin": 0.0, "vmax": 10.0},
+            },
+        )
+        depth = np.linspace(0.0, 10.0, 16, dtype=np.float32).reshape(4, 4, 1)
+        run.save_outputs(epoch=0, step=0, depth=dict(pred=depth))
+
+        f = list((run.dir / "outputs" / "epoch_0_step_0" / "depth" / "pred").iterdir())[0]
+        img = np.array(Image.open(f))
+        assert f.suffix == ".png"
+        assert img.min() == 0
+        assert img.max() == 255
+        run.finish()
+
+    def test_visualization_override_specific_dotted_key(self, tmp_path):
+        run = euler_train.init(
+            dir=str(tmp_path / "r"),
+            config={},
+            output_visualization={
+                "depth.pred": {"mode": "fixed_range", "vmin": 5.0, "vmax": 15.0},
+            },
+        )
+        depth = np.linspace(5.0, 15.0, 16, dtype=np.float32).reshape(4, 4, 1)
+        run.save_outputs(epoch=0, step=0, depth=dict(pred=depth, gt=depth))
+
+        base = run.dir / "outputs" / "epoch_0_step_0" / "depth"
+        pred_f = list((base / "pred").iterdir())[0]
+        gt_f = list((base / "gt").iterdir())[0]
+        pred_img = np.array(Image.open(pred_f))
+        gt_img = np.array(Image.open(gt_f))
+        assert pred_img.min() == 0
+        assert pred_img.max() == 255
+        assert gt_img.min() == 255
+        assert gt_img.max() == 255
+        run.finish()
+
+    def test_torch_bfloat16_single_channel_png_promoted_to_float32(self, tmp_path):
+        run = euler_train.init(dir=str(tmp_path / "r"), config={})
+        t = torch.linspace(0, 1, steps=16, dtype=torch.bfloat16).reshape(4, 4, 1)
+        run.save_outputs(epoch=0, step=0, confidence=dict(pred=t))
+
+        f = list((run.dir / "outputs" / "epoch_0_step_0" / "confidence" / "pred").iterdir())[0]
+        img = np.array(Image.open(f))
+        assert f.suffix == ".png"
+        assert img.dtype == np.uint8
+        assert img.min() == 0
+        assert img.max() >= 254
+        run.finish()
+
+
 # ═══════════════════════════════════════════════════════════════════════════
 #  save_outputs  — batches, lists, aux, PIL, torch
 # ═══════════════════════════════════════════════════════════════════════════

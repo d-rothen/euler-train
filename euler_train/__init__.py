@@ -1,6 +1,8 @@
 """runlog — lightweight file-based experiment logging."""
 from __future__ import annotations
 
+from typing import Any
+
 from . import _dataset_contract  # noqa: F401
 from .run import Run
 from .architecture import export_architecture
@@ -14,6 +16,7 @@ def init(
     config=None,
     meta: dict | None = None,
     output_formats: dict[str, str] | None = None,
+    output_visualization: dict[str, Any] | None = None,
     run_id: str | None = None,
     datasets: dict | None = None,
     run_name: str | None = None,
@@ -51,6 +54,11 @@ def init(
         (``"depth"``), a slot / aux name (``"transmission"``), or a
         dotted combination (``"depth.pred"``).  Values are ``"png"``,
         ``"npy"``, or ``"npz"``.
+    output_visualization:
+        Optional PNG rendering policy overrides. Keys resolve the same way
+        as *output_formats* (``"depth.pred"`` → ``"depth"`` → ``"pred"``).
+        Values can be a string mode (for example ``"percentile"``) or a
+        mapping such as ``{"mode": "fixed_range", "vmin": 0, "vmax": 80}``.
     run_id:
         If given, resume an existing run instead of creating a new one.
         The run directory ``{dir}/runs/{run_id}/`` must already exist.
@@ -84,7 +92,9 @@ def init(
     """
     return Run(
         dir=dir, config=config, meta=meta,
-        output_formats=output_formats, run_id=run_id,
+        output_formats=output_formats,
+        output_visualization=output_visualization,
+        run_id=run_id,
         datasets=datasets, run_name=run_name,
         evaluations=evaluations, mode=mode,
     )

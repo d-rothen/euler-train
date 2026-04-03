@@ -38,6 +38,7 @@ class Run:
         config: Any = None,
         meta: dict | None = None,
         output_formats: dict[str, str] | None = None,
+        output_visualization: dict[str, Any] | None = None,
         gpu_stats_every: int = 100,
         run_id: str | None = None,
         datasets: dict[str, Any] | None = None,
@@ -73,6 +74,7 @@ class Run:
 
         self.checkpoint_dir: Path | None = None
         self._output_formats: dict[str, str] = output_formats or {}
+        self._output_visualization: dict[str, Any] = output_visualization or {}
         self._start_time = time.time()
         self._finished = False
         self._gpu_handle: Any | None = None
@@ -305,7 +307,11 @@ class Run:
             if slots is None:
                 continue
             save_output_tree(
-                base / output_type, slots, self._output_formats, output_type,
+                base / output_type,
+                slots,
+                self._output_formats,
+                self._output_visualization,
+                output_type,
             )
         return base
 
