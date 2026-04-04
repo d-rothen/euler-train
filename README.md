@@ -82,7 +82,7 @@ The run ID and directory are available as `run.run_id` and `run.dir`.
 
 ### `euler_train.init(dir, config=None, meta=None, output_formats=None, output_visualization=None, run_id=None, datasets=None, run_name=None, evaluations=None, mode=None) → Run`
 
-Creates the run directory and writes `meta.json`, `config.json`, `code_ref.json`, and `run_environment.json`. On resume (`run_id` provided), only `meta.json` and `config.json` are updated.
+Creates the run directory and writes `meta.json`, `config.json`, `code_ref.json`, and `run_environment.json`. On resume (`run_id` provided), only `meta.json` and `config.json` are updated. `meta.json` also maintains an `updated_at` map with last-write timestamps for tracked artifacts.
 
 | Parameter | Type | Description |
 |---|---|---|
@@ -365,6 +365,24 @@ Auto-managed, not written to directly.
       "traceback": "Traceback (most recent call last):\n  ..."
     }
   },
+  "updated_at": {
+    "meta.json": {
+      "time": 1706403300.0,
+      "iso": "2025-01-28T16:25:00"
+    },
+    "config.json": {
+      "time": 1706400000.0,
+      "iso": "2025-01-28T15:30:42"
+    },
+    "train.jsonl": {
+      "time": 1706402999.0,
+      "iso": "2025-01-28T16:19:59"
+    },
+    "outputs/epoch_12_step_4800": {
+      "time": 1706403010.0,
+      "iso": "2025-01-28T16:20:10"
+    }
+  },
   "error": "RuntimeError: CUDA OOM",
   "traceback": "Traceback (most recent call last):\n  ..."
 }
@@ -375,6 +393,7 @@ Auto-managed, not written to directly.
 - `datasets` is only present when `datasets=...` is passed to `euler_train.init`.
 - `evaluations` is only present when evaluations are provided via `evaluations=...` on `init()` or added via `run.add_evaluation()`.
 - `modes` is only present when `mode=...` is passed to `euler_train.init`; each key stores the latest lifecycle snapshot for that mode.
+- `updated_at` stores last-write timestamps for tracked artifacts. Keys are run-relative paths when the artifact lives inside the run directory (for example `train.jsonl` or `outputs/epoch_2_step_500`) and absolute paths for external artifacts such as custom checkpoint locations.
 - `error` is only present when `status` is `"crashed"` (context manager / excepthook) or `"interrupted"` (SIGTERM/SIGINT). `traceback` is only present when `status` is `"crashed"`. When `mode=...` is set, the same fields are mirrored under `modes[mode]`.
 
 A formal JSON Schema for `meta.json` is available at [`meta-schema.json`](meta-schema.json).

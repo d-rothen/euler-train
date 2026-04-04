@@ -27,6 +27,12 @@ def _read_jsonl(path: Path) -> list[dict]:
     return [json.loads(line) for line in path.read_text().splitlines() if line.strip()]
 
 
+def _assert_updated_at_entry(entry: dict) -> None:
+    assert isinstance(entry["time"], (int, float))
+    assert isinstance(entry["iso"], str)
+    assert entry["iso"]
+
+
 class _DummyModality:
     def __init__(self, path: str) -> None:
         self.path = path
@@ -225,6 +231,57 @@ class TestInit:
         run = euler_train.init(dir=str(project), config={})
         assert run.project_dir == project
         assert run.dir.parent == project / "runs"
+        run.finish()
+
+
+class TestUpdatedAt:
+    def test_init_tracks_bootstrap_artifacts(self, tmp_path):
+        run = euler_train.init(dir=str(tmp_path / "r"), config={})
+
+        meta = _read_json(run.dir / "meta.json")
+        updated_at = meta["updated_at"]
+
+        for key in (
+            "meta.json",
+            "config.json",
+            "code_ref.json",
+            "run_environment.json",
+        ):
+            assert key in updated_at
+            _assert_updated_at_entry(updated_at[key])
+        run.finish()
+
+    def test_log_tracks_train_and_val_jsonl(self, tmp_path):
+        run = euler_train.init(dir=str(tmp_path / "r"), config={})
+
+        run.log({"loss": 1.0}, step=0, epoch=0)
+        run.log({"metric": 0.9}, step=1, epoch=0, mode="val")
+
+        meta = _read_json(run.dir / "meta.json")
+        updated_at = meta["updated_at"]
+        _assert_updated_at_entry(updated_at["train.jsonl"])
+        _assert_updated_at_entry(updated_at["val.jsonl"])
+        _assert_updated_at_entry(updated_at["meta.json"])
+        run.finish()
+
+    def test_save_outputs_tracks_output_directory(self, tmp_path):
+        run = euler_train.init(dir=str(tmp_path / "r"), config={})
+        arr = np.zeros((4, 4, 3), dtype=np.uint8)
+
+        run.save_outputs(epoch=0, step=0, rgb=dict(pred=arr))
+
+        meta = _read_json(run.dir / "meta.json")
+        _assert_updated_at_entry(meta["updated_at"]["outputs/epoch_0_step_0"])
+        run.finish()
+
+    def test_log_saved_checkpoint_tracks_checkpoint_path(self, tmp_path):
+        run = euler_train.init(dir=str(tmp_path / "r"), config={})
+        checkpoint_path = tmp_path / "external" / "epoch_1.pt"
+
+        run.log_saved_checkpoint(checkpoint_path, epoch=1, step=10)
+
+        meta = _read_json(run.dir / "meta.json")
+        _assert_updated_at_entry(meta["updated_at"][str(checkpoint_path)])
         run.finish()
 
 

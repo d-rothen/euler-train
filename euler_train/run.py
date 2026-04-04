@@ -82,6 +82,7 @@ class Run:
         self._gpu_stats_every: int = gpu_stats_every
         self.run_name: str | None = run_name
         self.mode: str | None = _normalize_mode(mode)
+        self._pending_updated_at: dict[str, dict[str, Any]] = {}
 
         # ── config ────────────────────────────────────────────────
         if resuming:
@@ -92,12 +93,19 @@ class Run:
         else:
             self.config: dict = normalize_config(config)
 
-        write_json(self.dir / "config.json", self.config)
+        config_path = self.dir / "config.json"
+        write_json(config_path, self.config)
+        self._record_artifact_update(config_path)
 
         # ── code ref & run environment (fresh runs only) ─────────
         if not resuming:
-            write_json(self.dir / "code_ref.json", get_code_ref())
-            write_json(self.dir / "run_environment.json", get_run_environment())
+            code_ref_path = self.dir / "code_ref.json"
+            write_json(code_ref_path, get_code_ref())
+            self._record_artifact_update(code_ref_path)
+
+            run_environment_path = self.dir / "run_environment.json"
+            write_json(run_environment_path, get_run_environment())
+            self._record_artifact_update(run_environment_path)
 
         # ── meta ──────────────────────────────────────────────────
         if resuming:
@@ -238,7 +246,10 @@ class Run:
             record.update(self._get_gpu_stats())
 
         filename = "train.jsonl" if mode == "train" else "val.jsonl"
-        append_jsonl(self.dir / filename, record)
+        log_path = self.dir / filename
+        append_jsonl(log_path, record)
+        self._record_artifact_update(log_path)
+        self._flush_meta()
 
     # ── GPU stats ─────────────────────────────────────────────────
 
@@ -313,6 +324,9 @@ class Run:
                 self._output_visualization,
                 output_type,
             )
+        if base.exists():
+            self._record_artifact_update(base)
+            self._flush_meta()
         return base
 
     # ── checkpoints ───────────────────────────────────────────────
@@ -339,6 +353,7 @@ class Run:
         if self.checkpoint_dir is not None:
             self.checkpoint_dir.mkdir(parents=True, exist_ok=True)
             self._meta["checkpoint_dir"] = str(self.checkpoint_dir)
+            self._record_artifact_update(self.checkpoint_dir)
             self._flush_meta()
             log.info("Checkpoint dir: %s", self.checkpoint_dir)
             return self.checkpoint_dir
@@ -357,6 +372,7 @@ class Run:
             )
         self.checkpoint_dir.mkdir(parents=True, exist_ok=True)
         self._meta["checkpoint_dir"] = str(self.checkpoint_dir)
+        self._record_artifact_update(self.checkpoint_dir)
         self._flush_meta()
         log.info("Checkpoint dir: %s", self.checkpoint_dir)
         return self.checkpoint_dir
@@ -415,6 +431,7 @@ class Run:
         :meth:`save_checkpoint` call it automatically.  When *is_best*
         is ``True``, any previous checkpoint marked as best is cleared.
         """
+        checkpoint_path = Path(path)
         checkpoints: list[dict[str, Any]] = self._meta.get("checkpoints", [])
 
         if is_best:
@@ -422,7 +439,7 @@ class Run:
                 entry.pop("is_best", None)
 
         record: dict[str, Any] = {
-            "path": str(path),
+            "path": str(checkpoint_path),
             "epoch": epoch,
             "step": step,
         }
@@ -431,6 +448,7 @@ class Run:
 
         checkpoints.append(record)
         self._meta["checkpoints"] = checkpoints
+        self._record_artifact_update(checkpoint_path)
         self._flush_meta()
 
     # ── architecture export ─────────────────────────────────────────
@@ -467,6 +485,7 @@ class Run:
             model, dummy_input, self.dir / "architecture.onnx"
         )
         self._meta["architecture"] = "architecture.onnx"
+        self._record_artifact_update(output_path)
         self._flush_meta()
         return output_path
 
@@ -652,7 +671,45 @@ class Run:
         self._meta["modes"] = modes
         return modes
 
+    def _updated_at_store(self) -> dict[str, Any]:
+        if not hasattr(self, "_meta"):
+            return self._pending_updated_at
+
+        updated_at = self._meta.get("updated_at")
+        if not isinstance(updated_at, dict):
+            updated_at = {}
+            self._meta["updated_at"] = updated_at
+
+        if self._pending_updated_at:
+            updated_at.update(self._pending_updated_at)
+            self._pending_updated_at.clear()
+
+        return updated_at
+
+    def _record_artifact_update(
+        self,
+        path: str | Path,
+        *,
+        when: float | None = None,
+    ) -> None:
+        artifact_path = Path(path)
+        ts = when if when is not None else _artifact_mtime(artifact_path)
+        if ts is None:
+            ts = time.time()
+        self._updated_at_store()[self._artifact_key(artifact_path)] = (
+            _updated_at_entry(ts)
+        )
+
+    def _artifact_key(self, path: Path) -> str:
+        if path.is_absolute():
+            try:
+                return path.relative_to(self.dir).as_posix()
+            except ValueError:
+                return str(path)
+        return path.as_posix()
+
     def _flush_meta(self) -> None:
+        self._record_artifact_update(self.dir / "meta.json", when=time.time())
         write_json(self.dir / "meta.json", self._meta)
 
     def __repr__(self) -> str:
@@ -730,6 +787,20 @@ def _generate_run_id() -> str:
 
 def _isotime(ts: float) -> str:
     return time.strftime("%Y-%m-%dT%H:%M:%S", time.localtime(ts))
+
+
+def _updated_at_entry(ts: float) -> dict[str, Any]:
+    return {
+        "time": ts,
+        "iso": _isotime(ts),
+    }
+
+
+def _artifact_mtime(path: Path) -> float | None:
+    try:
+        return path.stat().st_mtime
+    except OSError:
+        return None
 
 
 def _normalize_mode(mode: str | None) -> str | None:
@@ -1050,6 +1121,9 @@ def _read_ds_crawler_descriptor(path: str) -> dict[str, Any]:
     try:
         cfg = load_dataset_config({"path": path})
     except Exception:
+        descriptor = _read_output_json_descriptor(path)
+        if descriptor:
+            return descriptor
         try:
             contract = get_dataset_contract(path)
         except Exception:
@@ -1076,6 +1150,69 @@ def _read_ds_crawler_descriptor(path: str) -> dict[str, Any]:
         descriptor["modality_key"] = cfg_type
 
     hierarchy_regex = _as_non_empty_str(getattr(cfg, "hierarchy_regex", None))
+    if hierarchy_regex is not None:
+        descriptor["hierarchy_regex"] = hierarchy_regex
+
+    return descriptor
+
+
+def _read_output_json_descriptor(path: str) -> dict[str, Any]:
+    try:
+        from ds_crawler import zip_utils
+    except Exception:
+        return {}
+
+    try:
+        raw = zip_utils.read_metadata_json(Path(path), "output.json")
+    except Exception:
+        return {}
+
+    return _descriptor_from_output_json(raw, path)
+
+
+def _descriptor_from_output_json(raw: Any, path: str) -> dict[str, Any]:
+    if isinstance(raw, Mapping):
+        candidates: list[Any]
+        modalities = raw.get("modalities")
+        if isinstance(modalities, list):
+            candidates = modalities
+        else:
+            candidates = [raw]
+    elif isinstance(raw, list):
+        candidates = raw
+    else:
+        return {}
+
+    selected: Mapping[str, Any] | None = None
+    path_name = Path(path).name
+    for candidate in candidates:
+        if not isinstance(candidate, Mapping):
+            continue
+        if _as_non_empty_str(candidate.get("name")) == path_name:
+            selected = candidate
+            break
+        if selected is None:
+            selected = candidate
+
+    if selected is None:
+        return {}
+
+    descriptor: dict[str, Any] = {}
+    properties = selected.get("properties")
+    merged_properties = dict(properties) if isinstance(properties, Mapping) else {}
+
+    euler_train_props = selected.get("euler_train")
+    if isinstance(euler_train_props, Mapping):
+        merged_properties["euler_train"] = dict(euler_train_props)
+
+    if merged_properties:
+        descriptor["properties"] = merged_properties
+
+    modality_key = _as_non_empty_str(selected.get("type"))
+    if modality_key is not None:
+        descriptor["modality_key"] = modality_key
+
+    hierarchy_regex = _as_non_empty_str(selected.get("hierarchy_regex"))
     if hierarchy_regex is not None:
         descriptor["hierarchy_regex"] = hierarchy_regex
 

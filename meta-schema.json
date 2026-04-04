@@ -106,6 +106,13 @@
       "additionalProperties": {
         "$ref": "#/$defs/evaluation_entry"
       }
+    },
+    "updated_at": {
+      "type": "object",
+      "description": "Last-write timestamps keyed by artifact path.",
+      "additionalProperties": {
+        "$ref": "#/$defs/artifact_update"
+      }
     }
   },
   "required": ["run_id", "status", "start_time", "start_iso", "pid", "python", "command"],
@@ -223,6 +230,16 @@
         }
       },
       "additionalProperties": true
+    },
+    "artifact_update": {
+      "type": "object",
+      "description": "A last-write timestamp snapshot for one tracked artifact.",
+      "properties": {
+        "time": { "type": "number", "description": "Unix timestamp of the last observed write." },
+        "iso":  { "type": "string", "description": "ISO 8601 formatted local timestamp of the last observed write." }
+      },
+      "required": ["time", "iso"],
+      "additionalProperties": false
     }
   }
 }
