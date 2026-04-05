@@ -2,15 +2,16 @@
 from __future__ import annotations
 
 import atexit
+import copy
 import logging
 import os
 import re
 import secrets
-import warnings
 import signal
 import sys
 import time
 import traceback
+import warnings
 from collections.abc import Mapping
 from pathlib import Path
 from typing import Any
@@ -20,6 +21,7 @@ from .outputs import save_output_tree
 from .slurm import get_slurm_info
 from .git_info import get_code_ref
 from .environment import get_run_environment
+from .stream import OutputStream, StreamContext, coerce_output_stream
 
 log = logging.getLogger("euler_train")
 
@@ -45,6 +47,7 @@ class Run:
         run_name: str | None = None,
         evaluations: dict[str, dict[str, Any]] | None = None,
         mode: str | None = None,
+        stream: Any = None,
     ) -> None:
         # ── detect run-directory shorthand ────────────────────────
         # When `dir` points to an existing run directory (contains
@@ -83,6 +86,8 @@ class Run:
         self.run_name: str | None = run_name
         self.mode: str | None = _normalize_mode(mode)
         self._pending_updated_at: dict[str, dict[str, Any]] = {}
+        self._stream: OutputStream | None = coerce_output_stream(stream)
+        self._stream_event_counters: dict[str, int] = {}
 
         # ── config ────────────────────────────────────────────────
         if resuming:
@@ -97,14 +102,25 @@ class Run:
         write_json(config_path, self.config)
         self._record_artifact_update(config_path)
 
-        # ── code ref & run environment (fresh runs only) ─────────
-        if not resuming:
-            code_ref_path = self.dir / "code_ref.json"
-            write_json(code_ref_path, get_code_ref())
+        # ── code ref & run environment ───────────────────────────
+        code_ref_path = self.dir / "code_ref.json"
+        run_environment_path = self.dir / "run_environment.json"
+        if resuming:
+            self._code_ref_payload = (
+                read_json(code_ref_path) if code_ref_path.exists() else None
+            )
+            self._run_environment_payload = (
+                read_json(run_environment_path)
+                if run_environment_path.exists()
+                else None
+            )
+        else:
+            self._code_ref_payload = get_code_ref()
+            write_json(code_ref_path, self._code_ref_payload)
             self._record_artifact_update(code_ref_path)
 
-            run_environment_path = self.dir / "run_environment.json"
-            write_json(run_environment_path, get_run_environment())
+            self._run_environment_payload = get_run_environment()
+            write_json(run_environment_path, self._run_environment_payload)
             self._record_artifact_update(run_environment_path)
 
         # ── meta ──────────────────────────────────────────────────
@@ -161,6 +177,8 @@ class Run:
             )
         self._mark_mode_running()
         self._flush_meta()
+        self._bind_stream()
+        self._emit_stream_init()
         self._setup_hooks()
 
         verb = "Resumed" if resuming else "Started"
@@ -202,6 +220,19 @@ class Run:
             existing=self._meta.get("evaluations"),
         )
         self._flush_meta()
+        evaluations = self._meta.get("evaluations", {})
+        if isinstance(evaluations, dict) and key in evaluations:
+            self._emit_stream_event(
+                {
+                    "type": "meta",
+                    "eventId": self._make_stream_event_id("evaluation", key),
+                    "patch": {
+                        "evaluations": {
+                            key: copy.deepcopy(evaluations[key]),
+                        },
+                    },
+                },
+            )
 
     def finish_evaluation(self, key: str, status: str = "completed") -> None:
         """Mark an existing evaluation as finished.
@@ -216,6 +247,23 @@ class Run:
             )
         evals[key]["status"] = status
         self._flush_meta()
+        self._emit_stream_event(
+            {
+                "type": "meta",
+                "eventId": self._make_stream_event_id(
+                    "evaluation_status",
+                    key,
+                    status,
+                ),
+                "patch": {
+                    "evaluations": {
+                        key: {
+                            "status": status,
+                        },
+                    },
+                },
+            },
+        )
 
     # ── logging ───────────────────────────────────────────────────
 
@@ -250,6 +298,15 @@ class Run:
         append_jsonl(log_path, record)
         self._record_artifact_update(log_path)
         self._flush_meta()
+        split = "train" if mode == "train" else "val"
+        self._emit_stream_event(
+            {
+                "type": "metric",
+                "eventId": self._make_stream_event_id(split, epoch, step),
+                "split": split,
+                "records": [copy.deepcopy(record)],
+            },
+        )
 
     # ── GPU stats ─────────────────────────────────────────────────
 
@@ -327,6 +384,19 @@ class Run:
         if base.exists():
             self._record_artifact_update(base)
             self._flush_meta()
+            snapshot = self._build_output_snapshot(epoch, step, output_types)
+            if snapshot is not None:
+                self._emit_stream_event(
+                    {
+                        "type": "output_snapshot",
+                        "eventId": self._make_stream_event_id(
+                            "outputs",
+                            epoch,
+                            step,
+                        ),
+                        "snapshot": snapshot,
+                    },
+                )
         return base
 
     # ── checkpoints ───────────────────────────────────────────────
@@ -450,6 +520,17 @@ class Run:
         self._meta["checkpoints"] = checkpoints
         self._record_artifact_update(checkpoint_path)
         self._flush_meta()
+        self._emit_stream_event(
+            {
+                "type": "checkpoint",
+                "eventId": self._make_stream_event_id(
+                    "checkpoint",
+                    epoch,
+                    step,
+                ),
+                "checkpoint": copy.deepcopy(record),
+            },
+        )
 
     # ── architecture export ─────────────────────────────────────────
 
@@ -508,6 +589,16 @@ class Run:
         self._clear_terminal_fields(self._meta, status=status)
         self._finish_mode(status=status, end=end, duration=duration)
         self._flush_meta()
+        self._emit_stream_event(
+            {
+                "type": "finish",
+                "eventId": self._make_stream_event_id("finish", status),
+                "status": status,
+                "patch": self._build_finish_patch(),
+            },
+            flush=True,
+        )
+        self._close_stream()
 
     def detach(self) -> None:
         """Disconnect from the run without changing its status.
@@ -527,6 +618,7 @@ class Run:
         self._finished = True
         self._teardown_hooks()
         self._flush_meta()
+        self._close_stream()
 
     # ── context manager ───────────────────────────────────────────
 
@@ -711,6 +803,136 @@ class Run:
     def _flush_meta(self) -> None:
         self._record_artifact_update(self.dir / "meta.json", when=time.time())
         write_json(self.dir / "meta.json", self._meta)
+
+    def _bind_stream(self) -> None:
+        if self._stream is None:
+            return
+        self._stream.bind(
+            StreamContext(
+                run_id=self.run_id,
+                project_dir=self.project_dir,
+                runs_dir=self.dir.parent,
+                run_dir=self.dir,
+                meta=copy.deepcopy(self._meta),
+                config=copy.deepcopy(self.config),
+                code_ref=copy.deepcopy(self._code_ref_payload),
+                run_environment=copy.deepcopy(self._run_environment_payload),
+            ),
+        )
+
+    def _emit_stream_init(self) -> None:
+        tags = self._extract_stream_tags()
+        self._emit_stream_event(
+            {
+                "type": "init",
+                "eventId": self._make_stream_event_id("init"),
+                "meta": copy.deepcopy(self._meta),
+                "config": copy.deepcopy(self.config),
+                "codeRef": copy.deepcopy(self._code_ref_payload),
+                "runEnvironment": copy.deepcopy(self._run_environment_payload),
+                "tags": tags,
+            },
+            flush=True,
+        )
+
+    def _emit_stream_event(
+        self,
+        event: dict[str, Any],
+        *,
+        flush: bool = False,
+    ) -> None:
+        if self._stream is None:
+            return
+        self._stream.emit(event)
+        if flush:
+            self._stream.flush()
+
+    def _close_stream(self) -> None:
+        if self._stream is None:
+            return
+        self._stream.close()
+
+    def _extract_stream_tags(self) -> list[str] | None:
+        raw_tags = self._meta.get("tags")
+        if not isinstance(raw_tags, list):
+            return None
+        tags = [
+            str(tag).strip()
+            for tag in raw_tags
+            if isinstance(tag, str) and str(tag).strip()
+        ]
+        return tags or None
+
+    def _build_output_snapshot(
+        self,
+        epoch: int | None,
+        step: int | None,
+        output_types: dict[str, Any],
+    ) -> dict[str, Any] | None:
+        if epoch is None or step is None:
+            return None
+
+        snapshot_types: dict[str, list[str]] = {}
+        for output_type, slots in output_types.items():
+            if slots is None or not isinstance(slots, Mapping):
+                continue
+
+            categories: list[str] = []
+            for slot_name, data in slots.items():
+                if data is None:
+                    continue
+                if slot_name == "aux" and isinstance(data, Mapping):
+                    for aux_name, aux_value in data.items():
+                        if aux_value is None:
+                            continue
+                        categories.append(f"aux/{aux_name}")
+                else:
+                    categories.append(str(slot_name))
+
+            if categories:
+                snapshot_types[str(output_type)] = sorted(set(categories))
+
+        if not snapshot_types:
+            return None
+
+        return {
+            "epoch": epoch,
+            "step": step,
+            "types": snapshot_types,
+        }
+
+    def _build_finish_patch(self) -> dict[str, Any]:
+        patch = {
+            "end_time": self._meta.get("end_time"),
+            "end_iso": self._meta.get("end_iso"),
+            "duration_sec": self._meta.get("duration_sec"),
+        }
+
+        if "error" in self._meta:
+            patch["error"] = self._meta["error"]
+        if "traceback" in self._meta:
+            patch["traceback"] = self._meta["traceback"]
+
+        if self.mode is not None:
+            modes = self._meta.get("modes")
+            if isinstance(modes, dict) and self.mode in modes:
+                patch["modes"] = {
+                    self.mode: copy.deepcopy(modes[self.mode]),
+                }
+
+        return patch
+
+    def _make_stream_event_id(self, prefix: str, *parts: Any) -> str:
+        counter = self._stream_event_counters.get(prefix, 0)
+        self._stream_event_counters[prefix] = counter + 1
+        tokens = [prefix]
+        tokens.extend(
+            str(part)
+            for part in parts
+            if part is not None and str(part).strip()
+        )
+        tokens.append(str(counter))
+        return ":".join(tokens)
 
     def __repr__(self) -> str:
         return f"Run(id={self.run_id!r}, dir={str(self.dir)!r}, status={self._meta['status']!r})"

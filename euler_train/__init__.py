@@ -6,8 +6,24 @@ from typing import Any
 from . import _dataset_contract  # noqa: F401
 from .run import Run
 from .architecture import export_architecture
+from .stream import (
+    EulerViewStreamConfig,
+    EulerViewStreamConsumer,
+    OutputStream,
+    OutputStreamConsumer,
+    StreamContext,
+)
 
-__all__ = ["init", "Run", "export_architecture"]
+__all__ = [
+    "EulerViewStreamConfig",
+    "EulerViewStreamConsumer",
+    "OutputStream",
+    "OutputStreamConsumer",
+    "StreamContext",
+    "init",
+    "Run",
+    "export_architecture",
+]
 __version__ = "0.1.0"
 
 
@@ -22,6 +38,7 @@ def init(
     run_name: str | None = None,
     evaluations: dict[str, dict] | None = None,
     mode: str | None = None,
+    stream: Any = None,
 ) -> Run:
     """Create a new run — or resume an existing one — and return the handle.
 
@@ -89,6 +106,11 @@ def init(
         ``"train"``, ``"val"``, or ``"eval"``).  When provided,
         lifecycle fields and crash details are mirrored into
         ``meta.json`` under ``modes[mode]``.
+    stream:
+        Optional output-stream consumer or config. Passing a mapping
+        with ``base_url`` plus either ``stream_token`` or the pair
+        ``model_id`` / ``access_token`` enables best-effort dual-write
+        streaming to the Euler View model-run ingest API.
     """
     return Run(
         dir=dir, config=config, meta=meta,
@@ -97,4 +119,5 @@ def init(
         run_id=run_id,
         datasets=datasets, run_name=run_name,
         evaluations=evaluations, mode=mode,
+        stream=stream,
     )

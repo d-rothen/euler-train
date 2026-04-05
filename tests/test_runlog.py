@@ -7,6 +7,7 @@ import signal
 import sys
 from argparse import Namespace
 from pathlib import Path
+from urllib.error import URLError
 
 import numpy as np
 import pytest
@@ -14,6 +15,7 @@ import torch
 from PIL import Image
 
 import euler_train
+import euler_train.stream as stream_mod
 
 # ═══════════════════════════════════════════════════════════════════════════
 #  Helpers
@@ -70,6 +72,40 @@ class _DatasetWithRunlogDescription:
 
     def describe_for_runlog(self) -> dict:
         return self._description
+
+
+class _RecordingStreamConsumer:
+    def __init__(self) -> None:
+        self.context = None
+        self.events: list[dict] = []
+        self.flush_count = 0
+        self.close_count = 0
+
+    def bind(self, context) -> None:
+        self.context = context
+
+    def emit(self, event: dict) -> None:
+        self.events.append(json.loads(json.dumps(event)))
+
+    def flush(self) -> None:
+        self.flush_count += 1
+
+    def close(self) -> None:
+        self.close_count += 1
+
+
+class _FakeHttpResponse:
+    def __init__(self, payload: dict) -> None:
+        self._payload = payload
+
+    def read(self) -> bytes:
+        return json.dumps(self._payload).encode("utf-8")
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, exc_type, exc, tb) -> bool:
+        return False
 
 
 # ═══════════════════════════════════════════════════════════════════════════
@@ -1603,6 +1639,228 @@ class TestLogSavedCheckpoint:
         meta = _read_json(run.dir / "meta.json")
         assert "checkpoints" not in meta
         run.finish()
+
+
+# ═══════════════════════════════════════════════════════════════════════════
+#  streaming
+# ═══════════════════════════════════════════════════════════════════════════
+
+class TestStreaming:
+    def test_run_emits_expected_stream_events(self, tmp_path):
+        consumer = _RecordingStreamConsumer()
+
+        run = euler_train.init(
+            dir=str(tmp_path / "r"),
+            config={"lr": 1e-3},
+            meta={"tags": ["baseline", "fast"]},
+            stream=consumer,
+        )
+        run.add_evaluation(
+            "eval_rgb",
+            name="RGB Eval",
+            status="running",
+            metadata={"seed": 7},
+        )
+        run.finish_evaluation("eval_rgb")
+        run.log({"loss": 0.5}, step=0, epoch=0, mode="train")
+        run.log({"psnr": 28.1}, step=1, epoch=0, mode="val")
+        arr = np.zeros((4, 4, 3), dtype=np.uint8)
+        aux = np.ones((4, 4), dtype=np.float32)
+        run.save_outputs(
+            epoch=0,
+            step=1,
+            rgb=dict(pred=arr, gt=arr),
+            depth=dict(aux=dict(transmission=aux)),
+        )
+        run.log_saved_checkpoint("/tmp/model.pt", epoch=0, step=1, is_best=True)
+        run.finish()
+
+        assert consumer.context.run_id == run.run_id
+        assert consumer.context.run_dir == run.dir
+        assert consumer.close_count == 1
+        assert consumer.flush_count >= 2
+
+        event_types = [event["type"] for event in consumer.events]
+        assert event_types == [
+            "init",
+            "meta",
+            "meta",
+            "metric",
+            "metric",
+            "output_snapshot",
+            "checkpoint",
+            "finish",
+        ]
+
+        init_event = consumer.events[0]
+        assert init_event["meta"]["run_id"] == run.run_id
+        assert init_event["config"] == {"lr": 1e-3}
+        assert init_event["tags"] == ["baseline", "fast"]
+        assert isinstance(init_event["codeRef"], dict)
+        assert isinstance(init_event["runEnvironment"], dict)
+
+        add_eval_event = consumer.events[1]
+        assert add_eval_event["patch"] == {
+            "evaluations": {
+                "eval_rgb": {
+                    "name": "RGB Eval",
+                    "status": "running",
+                    "metadata": {"seed": 7},
+                },
+            },
+        }
+
+        finish_eval_event = consumer.events[2]
+        assert finish_eval_event["patch"] == {
+            "evaluations": {
+                "eval_rgb": {
+                    "status": "completed",
+                },
+            },
+        }
+
+        train_event = consumer.events[3]
+        assert train_event["split"] == "train"
+        assert train_event["records"][0]["loss"] == 0.5
+        assert "elapsed_sec" in train_event["records"][0]
+
+        val_event = consumer.events[4]
+        assert val_event["split"] == "val"
+        assert val_event["records"][0]["psnr"] == 28.1
+        assert "elapsed_sec" not in val_event["records"][0]
+
+        snapshot_event = consumer.events[5]
+        assert snapshot_event["snapshot"] == {
+            "epoch": 0,
+            "step": 1,
+            "types": {
+                "depth": ["aux/transmission"],
+                "rgb": ["gt", "pred"],
+            },
+        }
+
+        checkpoint_event = consumer.events[6]
+        assert checkpoint_event["checkpoint"] == {
+            "path": "/tmp/model.pt",
+            "epoch": 0,
+            "step": 1,
+            "is_best": True,
+        }
+
+        finish_event = consumer.events[7]
+        assert finish_event["status"] == "completed"
+        assert finish_event["patch"]["end_time"] is not None
+        assert finish_event["patch"]["duration_sec"] >= 0
+
+    def test_euler_view_http_consumer_uses_session_and_ingest_routes(
+        self,
+        tmp_path,
+        monkeypatch,
+    ):
+        calls: list[dict] = []
+
+        def fake_urlopen(request, timeout=0):
+            headers = {k.lower(): v for k, v in request.header_items()}
+            body = json.loads(request.data.decode("utf-8"))
+            calls.append(
+                {
+                    "url": request.full_url,
+                    "method": request.get_method(),
+                    "headers": headers,
+                    "body": body,
+                    "timeout": timeout,
+                },
+            )
+            if request.full_url.endswith("/stream/session"):
+                return _FakeHttpResponse(
+                    {
+                        "token": "stream-token",
+                        "expiresAt": "2099-01-01T00:00:00+00:00",
+                        "ingestUrl": "https://sync.example/api/model-run-stream/ingest",
+                    },
+                )
+            if request.full_url.endswith("/api/model-run-stream/ingest"):
+                return _FakeHttpResponse(
+                    {
+                        "success": True,
+                        "events": [],
+                        "latestCursor": len(calls),
+                    },
+                )
+            raise AssertionError(f"Unexpected URL {request.full_url}")
+
+        monkeypatch.setattr(stream_mod, "urlopen", fake_urlopen)
+
+        run = euler_train.init(
+            dir=str(tmp_path / "r"),
+            config={"lr": 1e-3},
+            stream={
+                "base_url": "https://sync.example",
+                "model_id": 42,
+                "access_token": "user-token",
+                "datasource_id": 7,
+                "batch_size": 1,
+            },
+        )
+        run.log({"loss": 0.25}, step=3, epoch=1)
+        run.finish()
+
+        assert calls[0]["url"] == (
+            f"https://sync.example/api/models/42/runs/{run.run_id}/stream/session"
+        )
+        assert calls[0]["method"] == "POST"
+        assert calls[0]["headers"]["authorization"] == "Bearer user-token"
+        assert calls[0]["body"] == {
+            "runDir": str(run.dir),
+            "eulerTrainDir": str(run.dir.parent),
+            "datasourceId": 7,
+        }
+
+        ingest_calls = calls[1:]
+        assert [call["body"]["events"][0]["type"] for call in ingest_calls] == [
+            "init",
+            "metric",
+            "finish",
+        ]
+        for ingest_call in ingest_calls:
+            assert ingest_call["url"] == "https://sync.example/api/model-run-stream/ingest"
+            assert ingest_call["headers"]["authorization"] == "Bearer stream-token"
+
+        metric_call = ingest_calls[1]
+        metric_event = metric_call["body"]["events"][0]
+        assert metric_event["split"] == "train"
+        assert metric_event["records"][0]["step"] == 3
+        assert metric_event["records"][0]["epoch"] == 1
+        assert metric_event["records"][0]["loss"] == 0.25
+
+        finish_event = ingest_calls[2]["body"]["events"][0]
+        assert finish_event["status"] == "completed"
+
+    def test_stream_network_failures_do_not_break_training(
+        self,
+        tmp_path,
+        monkeypatch,
+    ):
+        def fake_urlopen(request, timeout=0):
+            raise URLError("offline")
+
+        monkeypatch.setattr(stream_mod, "urlopen", fake_urlopen)
+
+        run = euler_train.init(
+            dir=str(tmp_path / "r"),
+            config={},
+            stream={
+                "base_url": "https://sync.example",
+                "model_id": 42,
+                "access_token": "user-token",
+                "batch_size": 1,
+            },
+        )
+        run.log({"loss": 1.0}, step=0, epoch=0)
+        run.finish()
+
+        meta = _read_json(run.dir / "meta.json")
+        assert meta["status"] == "completed"
 
 
 # ═══════════════════════════════════════════════════════════════════════════
