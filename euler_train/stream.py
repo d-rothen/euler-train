@@ -53,6 +53,7 @@ class EulerViewStreamConfig:
 
     base_url: str
     model_id: int | None = None
+    api_token: str | None = None
     access_token: str | None = None
     stream_token: str | None = None
     datasource_id: int | None = None
@@ -74,6 +75,10 @@ class EulerViewStreamConfig:
         self.access_token = _normalize_optional_text(
             self.access_token,
             field_name="stream.access_token",
+        )
+        self.api_token = _normalize_optional_text(
+            self.api_token,
+            field_name="stream.api_token",
         )
         self.stream_token = _normalize_optional_text(
             self.stream_token,
@@ -125,9 +130,9 @@ class EulerViewStreamConfig:
                 raise ValueError(
                     "stream.model_id is required when stream.stream_token is not provided",
                 )
-            if self.access_token is None:
+            if self.api_token is None and self.access_token is None:
                 raise ValueError(
-                    "stream.access_token is required when stream.stream_token is not provided",
+                    "stream.api_token or stream.access_token is required when stream.stream_token is not provided",
                 )
 
 
@@ -303,7 +308,7 @@ class EulerViewStreamConsumer:
             payload = self._post_json(
                 session_url,
                 session_body,
-                token=self.config.access_token,
+                token=self.config.api_token or self.config.access_token,
             )
         except Exception as exc:
             self._schedule_retry()
@@ -441,6 +446,7 @@ def _config_from_mapping(raw: Mapping[str, Any]) -> EulerViewStreamConfig:
         base_url=_mapping_get(raw, "base_url", "baseUrl"),
         model_id=_mapping_get(raw, "model_id", "modelId"),
         access_token=_mapping_get(raw, "access_token", "accessToken"),
+        api_token=_mapping_get(raw, "api_token", "apiToken"),
         stream_token=_mapping_get(raw, "stream_token", "streamToken"),
         datasource_id=_mapping_get(raw, "datasource_id", "datasourceId"),
         euler_train_dir=_mapping_get(raw, "euler_train_dir", "eulerTrainDir"),

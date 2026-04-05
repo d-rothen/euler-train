@@ -109,8 +109,9 @@ def init(
     stream:
         Optional output-stream consumer or config. Passing a mapping
         with ``base_url`` plus either ``stream_token`` or the pair
-        ``model_id`` / ``access_token`` enables best-effort dual-write
-        streaming to the Euler View model-run ingest API.
+        ``model_id`` / ``api_token`` (or legacy ``access_token``)
+        enables best-effort dual-write streaming to the Euler View
+        model-run ingest API.
     """
     return Run(
         dir=dir, config=config, meta=meta,

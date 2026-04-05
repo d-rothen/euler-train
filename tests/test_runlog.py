@@ -1797,7 +1797,7 @@ class TestStreaming:
             stream={
                 "base_url": "https://sync.example",
                 "model_id": 42,
-                "access_token": "user-token",
+                "api_token": "user-token",
                 "datasource_id": 7,
                 "batch_size": 1,
             },
