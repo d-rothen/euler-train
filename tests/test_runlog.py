@@ -2042,3 +2042,118 @@ class TestInterruptHandling:
         meta = _read_json(run.dir / "meta.json")
         assert meta["status"] == "interrupted"
         assert "SIGINT" in meta["error"]
+
+
+# ═══════════════════════════════════════════════════════════════════════════
+#  Metric naming
+# ═══════════════════════════════════════════════════════════════════════════
+
+_SAMPLE_METRIC_NAMING = {
+    "producer_key": "euler_train.weather_metric",
+    "producer_version": "0.1.0",
+    "namespaces": {
+        "depth.train": {
+            "axes": {
+                "kind": {"position": 0, "optional": False, "values": ["loss", "diag", "stat"]},
+                "stage": {"position": 1, "optional": True, "values": ["prior", "final"]},
+            }
+        },
+        "sys.train": {
+            "axes": {}
+        },
+    },
+}
+
+
+class TestMetricNaming:
+    def test_metric_naming_stored_in_meta_json(self, tmp_path):
+        run = euler_train.init(
+            dir=str(tmp_path / "r"),
+            config={"lr": 1e-3},
+            metric_naming=_SAMPLE_METRIC_NAMING,
+        )
+        meta = _read_json(run.dir / "meta.json")
+        assert meta["metric_naming"] == _SAMPLE_METRIC_NAMING
+        run.finish()
+
+    def test_metric_naming_none_by_default(self, tmp_path):
+        run = euler_train.init(
+            dir=str(tmp_path / "r"),
+            config={},
+        )
+        meta = _read_json(run.dir / "meta.json")
+        assert "metric_naming" not in meta
+        run.finish()
+
+    def test_metric_naming_in_stream_init_event(self, tmp_path):
+        consumer = _RecordingStreamConsumer()
+        run = euler_train.init(
+            dir=str(tmp_path / "r"),
+            config={},
+            stream=consumer,
+            metric_naming=_SAMPLE_METRIC_NAMING,
+        )
+        run.finish()
+
+        init_event = consumer.events[0]
+        assert init_event["type"] == "init"
+        assert init_event["meta"]["metric_naming"] == _SAMPLE_METRIC_NAMING
+
+    def test_metric_naming_not_in_stream_when_absent(self, tmp_path):
+        consumer = _RecordingStreamConsumer()
+        run = euler_train.init(
+            dir=str(tmp_path / "r"),
+            config={},
+            stream=consumer,
+        )
+        run.finish()
+
+        init_event = consumer.events[0]
+        assert "metric_naming" not in init_event["meta"]
+
+    def test_metric_naming_preserved_on_resume(self, tmp_path):
+        run1 = euler_train.init(
+            dir=str(tmp_path / "r"),
+            config={},
+            metric_naming=_SAMPLE_METRIC_NAMING,
+        )
+        run1.finish()
+
+        run2 = euler_train.init(
+            dir=str(run1.dir),
+        )
+        meta = _read_json(run2.dir / "meta.json")
+        assert meta["metric_naming"] == _SAMPLE_METRIC_NAMING
+        run2.finish()
+
+    def test_metric_naming_validation_not_dict(self, tmp_path):
+        with pytest.raises(TypeError, match="metric_naming must be a dict"):
+            euler_train.init(
+                dir=str(tmp_path / "r"),
+                config={},
+                metric_naming="invalid",
+            )
+
+    def test_metric_naming_validation_missing_namespaces(self, tmp_path):
+        with pytest.raises(ValueError, match="namespaces"):
+            euler_train.init(
+                dir=str(tmp_path / "r"),
+                config={},
+                metric_naming={"producer_key": "test"},
+            )
+
+    def test_metric_naming_validation_namespaces_not_dict(self, tmp_path):
+        with pytest.raises(ValueError, match="namespaces"):
+            euler_train.init(
+                dir=str(tmp_path / "r"),
+                config={},
+                metric_naming={"namespaces": "invalid"},
+            )
+
+    def test_metric_naming_validation_namespace_entry_not_dict(self, tmp_path):
+        with pytest.raises(ValueError, match="must be a dict"):
+            euler_train.init(
+                dir=str(tmp_path / "r"),
+                config={},
+                metric_naming={"namespaces": {"depth.train": "invalid"}},
+            )

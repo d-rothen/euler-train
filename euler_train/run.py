@@ -48,6 +48,7 @@ class Run:
         evaluations: dict[str, dict[str, Any]] | None = None,
         mode: str | None = None,
         stream: Any = None,
+        metric_naming: dict[str, Any] | None = None,
     ) -> None:
         # ── detect run-directory shorthand ────────────────────────
         # When `dir` points to an existing run directory (contains
@@ -175,6 +176,12 @@ class Run:
                 evaluations=evaluations,
                 existing=self._meta.get("evaluations"),
             )
+
+        # ── metric naming (optional structured naming declaration) ──
+        if metric_naming is not None:
+            _validate_metric_naming(metric_naming)
+            self._meta["metric_naming"] = metric_naming
+
         self._mark_mode_running()
         self._flush_meta()
         self._bind_stream()
@@ -1033,6 +1040,26 @@ def _normalize_mode(mode: str | None) -> str | None:
     if not normalized:
         raise ValueError("mode must be a non-empty string when provided")
     return normalized
+
+
+def _validate_metric_naming(value: Any) -> None:
+    """Lightweight structural validation of a metric_naming payload."""
+    if not isinstance(value, dict):
+        raise TypeError("metric_naming must be a dict")
+    namespaces = value.get("namespaces")
+    if not isinstance(namespaces, dict):
+        raise ValueError(
+            "metric_naming must contain a 'namespaces' dict"
+        )
+    for ns_key, ns_decl in namespaces.items():
+        if not isinstance(ns_key, str):
+            raise ValueError(
+                f"metric_naming namespace key must be a string, got {type(ns_key).__name__}"
+            )
+        if not isinstance(ns_decl, dict):
+            raise ValueError(
+                f"metric_naming namespace {ns_key!r} must be a dict"
+            )
 
 
 def _build_datasets_meta(

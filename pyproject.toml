@@ -13,6 +13,7 @@ dependencies = ["numpy", "euler-dataset-contract"]
 images = ["Pillow"]
 gpu = ["nvidia-ml-py"]
 architecture = ["onnx", "onnxruntime", "onnxsim"]
+naming = ["euler-metric-naming"]
 dev = ["pytest", "Pillow", "torch", "nvidia-ml-py", "onnx", "onnxruntime", "onnxsim"]
 
 [tool.pytest.ini_options]
