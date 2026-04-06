@@ -318,7 +318,14 @@ class Run:
     # ── GPU stats ─────────────────────────────────────────────────
 
     def _get_gpu_stats(self) -> dict[str, Any]:
-        """Return GPU utilization & memory stats, or {} if unavailable."""
+        """Return GPU utilization & memory stats, or {} if unavailable.
+
+        When the run has a ``metric_naming`` declaration, keys are
+        namespaced under ``sys.train.*`` so euler-view can resolve them
+        against the declared ``sys.train`` namespace.  Legacy runs
+        (without ``metric_naming``) retain the flat key names for
+        backward compatibility.
+        """
         if self._gpu_available is None:
             try:
                 import pynvml
@@ -335,7 +342,7 @@ class Run:
         try:
             util = pynvml.nvmlDeviceGetUtilizationRates(self._gpu_handle)
             mem = pynvml.nvmlDeviceGetMemoryInfo(self._gpu_handle)
-            return {
+            raw = {
                 "gpu_util_pct": util.gpu,
                 "gpu_mem_util_pct": util.memory,
                 "gpu_mem_used_gb": round(mem.used / 1e9, 3),
@@ -343,6 +350,9 @@ class Run:
             }
         except Exception:
             return {}
+        if self._meta.get("metric_naming") is not None:
+            return {f"sys.train.{k}": v for k, v in raw.items()}
+        return raw
 
     # ── visual / heavy outputs ────────────────────────────────────
 

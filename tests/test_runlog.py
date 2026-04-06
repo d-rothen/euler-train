@@ -2157,3 +2157,64 @@ class TestMetricNaming:
                 config={},
                 metric_naming={"namespaces": {"depth.train": "invalid"}},
             )
+
+    def test_gpu_stats_namespaced_when_metric_naming_present(self, tmp_path):
+        """GPU stats should use sys.train.* keys when metric_naming is set."""
+        run = euler_train.init(
+            dir=str(tmp_path / "r"),
+            config={},
+            metric_naming=_SAMPLE_METRIC_NAMING,
+        )
+        # Force GPU stats to be "available" with a mock
+        run._gpu_available = True
+
+        class _FakeUtil:
+            gpu = 75
+            memory = 50
+
+        class _FakeMem:
+            used = 4_000_000_000
+            total = 8_000_000_000
+
+        import unittest.mock as mock
+        with mock.patch.dict("sys.modules", {"pynvml": mock.MagicMock()}) as _:
+            import sys as _sys
+            pynvml_mock = _sys.modules["pynvml"]
+            pynvml_mock.nvmlDeviceGetUtilizationRates.return_value = _FakeUtil()
+            pynvml_mock.nvmlDeviceGetMemoryInfo.return_value = _FakeMem()
+
+            stats = run._get_gpu_stats()
+
+        assert "sys.train.gpu_util_pct" in stats
+        assert "sys.train.gpu_mem_used_gb" in stats
+        assert "gpu_util_pct" not in stats
+        run.finish()
+
+    def test_gpu_stats_flat_when_no_metric_naming(self, tmp_path):
+        """GPU stats should use flat keys when metric_naming is absent."""
+        run = euler_train.init(
+            dir=str(tmp_path / "r"),
+            config={},
+        )
+        run._gpu_available = True
+
+        class _FakeUtil:
+            gpu = 75
+            memory = 50
+
+        class _FakeMem:
+            used = 4_000_000_000
+            total = 8_000_000_000
+
+        import unittest.mock as mock
+        with mock.patch.dict("sys.modules", {"pynvml": mock.MagicMock()}) as _:
+            import sys as _sys
+            pynvml_mock = _sys.modules["pynvml"]
+            pynvml_mock.nvmlDeviceGetUtilizationRates.return_value = _FakeUtil()
+            pynvml_mock.nvmlDeviceGetMemoryInfo.return_value = _FakeMem()
+
+            stats = run._get_gpu_stats()
+
+        assert "gpu_util_pct" in stats
+        assert "sys.train.gpu_util_pct" not in stats
+        run.finish()
