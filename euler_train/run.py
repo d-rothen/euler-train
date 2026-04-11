@@ -361,6 +361,7 @@ class Run:
         *,
         epoch: int | None = None,
         step: int | None = None,
+        metadata: dict[str, Any] | None = None,
         **output_types: dict[str, Any],
     ) -> Path:
         """Save prediction / ground-truth / auxiliary arrays to disk.
@@ -383,11 +384,26 @@ class Run:
                 rgb=dict(pred={"scene_042": img_a, "scene_117": img_b}),
             )
 
+        An optional *metadata* dict attaches source context (dataset,
+        split, etc.) to the manifest.  The ``dataset`` key is required
+        when *metadata* is provided::
+
+            run.save_outputs(
+                epoch=1, step=500,
+                metadata={"dataset": "vkitti2", "split": "val"},
+                rgb=dict(pred=pred_img),
+            )
+
         Accepted slot keys: ``pred``, ``gt``, ``input``, ``aux``.
         ``aux`` expects a sub-dict of named arrays.
 
         Returns the directory that was written to.
         """
+        if metadata is not None:
+            if not isinstance(metadata.get("dataset"), str) or not metadata["dataset"].strip():
+                raise ValueError(
+                    "metadata must include a non-empty 'dataset' string"
+                )
         parts: list[str] = []
         if epoch is not None:
             parts.append(f"epoch_{epoch}")
@@ -396,21 +412,38 @@ class Run:
         dirname = "_".join(parts) or "unspecified"
         base = self.dir / "outputs" / dirname
 
+        manifest_types: dict[str, Any] = {}
         for output_type, slots in output_types.items():
             if slots is None:
                 continue
-            save_output_tree(
+            slot_manifest = save_output_tree(
                 base / output_type,
                 slots,
                 self._output_formats,
                 self._output_visualization,
                 output_type,
             )
+            if slot_manifest:
+                manifest_types[output_type] = slot_manifest
+        if manifest_types:
+            manifest: dict[str, Any] = {
+                "version": 1,
+                "epoch": epoch,
+                "step": step,
+                "output_types": manifest_types,
+                "format_overrides": dict(self._output_formats),
+                "visualization_overrides": {
+                    k: dict(v) if isinstance(v, Mapping) else v
+                    for k, v in self._output_visualization.items()
+                } if self._output_visualization else {},
+            }
+            if metadata is not None:
+                manifest["metadata"] = metadata
+            write_json(base / "manifest.json", manifest)
         if base.exists():
             self._record_artifact_update(base)
             self._flush_meta()
-            snapshot = self._build_output_snapshot(epoch, step, output_types)
-            if snapshot is not None:
+            if manifest_types and epoch is not None and step is not None:
                 self._emit_stream_event(
                     {
                         "type": "output_snapshot",
@@ -419,7 +452,13 @@ class Run:
                             epoch,
                             step,
                         ),
-                        "snapshot": snapshot,
+                        "snapshot": {
+                            "version": 1,
+                            "epoch": epoch,
+                            "step": step,
+                            "output_types": manifest_types,
+                            **({"metadata": metadata} if metadata is not None else {}),
+                        },
                     },
                 )
         return base
@@ -887,44 +926,6 @@ class Run:
             if isinstance(tag, str) and str(tag).strip()
         ]
         return tags or None
-
-    def _build_output_snapshot(
-        self,
-        epoch: int | None,
-        step: int | None,
-        output_types: dict[str, Any],
-    ) -> dict[str, Any] | None:
-        if epoch is None or step is None:
-            return None
-
-        snapshot_types: dict[str, list[str]] = {}
-        for output_type, slots in output_types.items():
-            if slots is None or not isinstance(slots, Mapping):
-                continue
-
-            categories: list[str] = []
-            for slot_name, data in slots.items():
-                if data is None:
-                    continue
-                if slot_name == "aux" and isinstance(data, Mapping):
-                    for aux_name, aux_value in data.items():
-                        if aux_value is None:
-                            continue
-                        categories.append(f"aux/{aux_name}")
-                else:
-                    categories.append(str(slot_name))
-
-            if categories:
-                snapshot_types[str(output_type)] = sorted(set(categories))
-
-        if not snapshot_types:
-            return None
-
-        return {
-            "epoch": epoch,
-            "step": step,
-            "types": snapshot_types,
-        }
 
     def _build_finish_patch(self) -> dict[str, Any]:
         patch = {

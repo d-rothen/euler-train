@@ -18,7 +18,7 @@ def save_output_tree(
     format_overrides: dict[str, str],
     visualization_overrides: dict[str, Any],
     output_type: str,
-) -> None:
+) -> dict[str, Any]:
     """Persist all slots (pred, gt, input, aux/…) for one *output_type*.
 
     *slots* example::
@@ -28,7 +28,10 @@ def save_output_tree(
             "gt":   array,
             "aux":  {"transmission": array, "attention": array},
         }
+
+    Returns a dict mapping slot keys to their manifest entries.
     """
+    manifest: dict[str, Any] = {}
     for slot_name, data in slots.items():
         if data is None:
             continue
@@ -36,7 +39,7 @@ def save_output_tree(
             for aux_name, aux_data in data.items():
                 if aux_data is None:
                     continue
-                _save_slot(
+                manifest[f"aux/{aux_name}"] = _save_slot(
                     type_dir / "aux" / aux_name,
                     aux_data,
                     output_type,
@@ -45,7 +48,7 @@ def save_output_tree(
                     visualization_overrides,
                 )
         else:
-            _save_slot(
+            manifest[slot_name] = _save_slot(
                 type_dir / slot_name,
                 data,
                 output_type,
@@ -53,6 +56,7 @@ def save_output_tree(
                 format_overrides,
                 visualization_overrides,
             )
+    return manifest
 
 
 # ---------------------------------------------------------------------------
@@ -66,7 +70,8 @@ def _save_slot(
     leaf_name: str,
     format_overrides: dict[str, str],
     visualization_overrides: dict[str, Any],
-) -> None:
+) -> dict[str, Any]:
+    """Save items for one slot and return a manifest entry."""
     slot_dir.mkdir(parents=True, exist_ok=True)
     visualization = _resolve_visualization(
         output_type, leaf_name, visualization_overrides,
@@ -74,16 +79,21 @@ def _save_slot(
 
     # Dict with string keys → named outputs (e.g. {"scene_042": img}).
     if isinstance(data, dict):
+        files: list[dict[str, Any]] = []
         for name, raw in data.items():
             item = _prepare(raw)
             fmt = _resolve_format(item, output_type, leaf_name, format_overrides)
             _save_item(slot_dir / f"{name}.{fmt}", item, fmt, visualization)
-        return
+            files.append({"sample_id": name, "filename": f"{name}.{fmt}", "format": fmt})
+        return {"id_mode": "named", "files": files}
 
     items = _unpack(data)
+    files = []
     for idx, item in enumerate(items):
         fmt = _resolve_format(item, output_type, leaf_name, format_overrides)
         _save_item(slot_dir / f"{idx:04d}.{fmt}", item, fmt, visualization)
+        files.append({"sample_id": idx, "filename": f"{idx:04d}.{fmt}", "format": fmt})
+    return {"id_mode": "indexed", "files": files}
 
 
 # ---- normalisation -------------------------------------------------------

@@ -1489,6 +1489,162 @@ class TestSaveOutputsVariants:
 
 
 # ═══════════════════════════════════════════════════════════════════════════
+#  Output manifest
+# ═══════════════════════════════════════════════════════════════════════════
+
+class TestSaveOutputsManifest:
+    def test_manifest_written_for_basic_save(self, tmp_path):
+        run = euler_train.init(dir=str(tmp_path / "r"), config={})
+        arr = np.zeros((4, 4, 3), dtype=np.uint8)
+        run.save_outputs(epoch=1, step=500, rgb=dict(pred=arr))
+
+        m = _read_json(run.dir / "outputs" / "epoch_1_step_500" / "manifest.json")
+        assert m["version"] == 1
+        assert m["epoch"] == 1
+        assert m["step"] == 500
+        assert "rgb" in m["output_types"]
+        assert "pred" in m["output_types"]["rgb"]
+        run.finish()
+
+    def test_manifest_indexed_files(self, tmp_path):
+        run = euler_train.init(dir=str(tmp_path / "r"), config={})
+        imgs = [np.zeros((4, 4, 3), dtype=np.uint8) for _ in range(3)]
+        run.save_outputs(epoch=0, step=0, rgb=dict(pred=imgs))
+
+        slot = _read_json(
+            run.dir / "outputs" / "epoch_0_step_0" / "manifest.json",
+        )["output_types"]["rgb"]["pred"]
+        assert slot["id_mode"] == "indexed"
+        assert len(slot["files"]) == 3
+        assert slot["files"][0] == {"sample_id": 0, "filename": "0000.png", "format": "png"}
+        assert slot["files"][2]["sample_id"] == 2
+        run.finish()
+
+    def test_manifest_named_files(self, tmp_path):
+        run = euler_train.init(dir=str(tmp_path / "r"), config={})
+        a = np.zeros((4, 4, 3), dtype=np.uint8)
+        run.save_outputs(epoch=0, step=0, rgb=dict(pred={"scene_a": a, "scene_b": a}))
+
+        slot = _read_json(
+            run.dir / "outputs" / "epoch_0_step_0" / "manifest.json",
+        )["output_types"]["rgb"]["pred"]
+        assert slot["id_mode"] == "named"
+        ids = [f["sample_id"] for f in slot["files"]]
+        assert "scene_a" in ids
+        assert "scene_b" in ids
+        run.finish()
+
+    def test_manifest_aux_slots(self, tmp_path):
+        run = euler_train.init(dir=str(tmp_path / "r"), config={})
+        arr = np.ones((4, 4), dtype=np.float32)
+        run.save_outputs(epoch=0, step=0, depth=dict(aux=dict(transmission=arr)))
+
+        m = _read_json(run.dir / "outputs" / "epoch_0_step_0" / "manifest.json")
+        assert "aux/transmission" in m["output_types"]["depth"]
+        run.finish()
+
+    def test_manifest_none_slots_excluded(self, tmp_path):
+        run = euler_train.init(dir=str(tmp_path / "r"), config={})
+        arr = np.zeros((4, 4, 3), dtype=np.uint8)
+        run.save_outputs(epoch=0, step=0, rgb=dict(pred=arr, gt=None))
+
+        slots = _read_json(
+            run.dir / "outputs" / "epoch_0_step_0" / "manifest.json",
+        )["output_types"]["rgb"]
+        assert "pred" in slots
+        assert "gt" not in slots
+        run.finish()
+
+    def test_manifest_records_format_overrides(self, tmp_path):
+        run = euler_train.init(
+            dir=str(tmp_path / "r"), config={},
+            output_formats={"depth": "npz"},
+        )
+        arr = np.ones((4, 4), dtype=np.float32)
+        run.save_outputs(epoch=0, step=0, depth=dict(pred=arr))
+
+        m = _read_json(run.dir / "outputs" / "epoch_0_step_0" / "manifest.json")
+        assert m["format_overrides"] == {"depth": "npz"}
+        assert m["output_types"]["depth"]["pred"]["files"][0]["format"] == "npz"
+        run.finish()
+
+    def test_manifest_mixed_named_and_indexed(self, tmp_path):
+        run = euler_train.init(dir=str(tmp_path / "r"), config={})
+        arr = np.zeros((4, 4, 3), dtype=np.uint8)
+        run.save_outputs(epoch=0, step=0, rgb=dict(pred={"x": arr}, gt=arr))
+
+        slots = _read_json(
+            run.dir / "outputs" / "epoch_0_step_0" / "manifest.json",
+        )["output_types"]["rgb"]
+        assert slots["pred"]["id_mode"] == "named"
+        assert slots["gt"]["id_mode"] == "indexed"
+        run.finish()
+
+    def test_manifest_metadata(self, tmp_path):
+        run = euler_train.init(dir=str(tmp_path / "r"), config={})
+        arr = np.zeros((4, 4, 3), dtype=np.uint8)
+        run.save_outputs(
+            epoch=0, step=0,
+            metadata={"dataset": "vkitti2", "split": "val"},
+            rgb=dict(pred=arr),
+        )
+
+        m = _read_json(run.dir / "outputs" / "epoch_0_step_0" / "manifest.json")
+        assert m["metadata"] == {"dataset": "vkitti2", "split": "val"}
+        run.finish()
+
+    def test_manifest_metadata_absent_when_not_provided(self, tmp_path):
+        run = euler_train.init(dir=str(tmp_path / "r"), config={})
+        arr = np.zeros((4, 4, 3), dtype=np.uint8)
+        run.save_outputs(epoch=0, step=0, rgb=dict(pred=arr))
+
+        m = _read_json(run.dir / "outputs" / "epoch_0_step_0" / "manifest.json")
+        assert "metadata" not in m
+        run.finish()
+
+    def test_manifest_metadata_requires_dataset(self, tmp_path):
+        run = euler_train.init(dir=str(tmp_path / "r"), config={})
+        arr = np.zeros((4, 4, 3), dtype=np.uint8)
+        with pytest.raises(ValueError, match="dataset"):
+            run.save_outputs(
+                epoch=0, step=0,
+                metadata={"split": "val"},
+                rgb=dict(pred=arr),
+            )
+        run.finish()
+
+    def test_manifest_metadata_rejects_empty_dataset(self, tmp_path):
+        run = euler_train.init(dir=str(tmp_path / "r"), config={})
+        arr = np.zeros((4, 4, 3), dtype=np.uint8)
+        with pytest.raises(ValueError, match="dataset"):
+            run.save_outputs(
+                epoch=0, step=0,
+                metadata={"dataset": "  "},
+                rgb=dict(pred=arr),
+            )
+        run.finish()
+
+    def test_no_manifest_when_all_none(self, tmp_path):
+        run = euler_train.init(dir=str(tmp_path / "r"), config={})
+        run.save_outputs(epoch=0, step=0, rgb=None, depth=None)
+
+        manifest_path = run.dir / "outputs" / "epoch_0_step_0" / "manifest.json"
+        assert not manifest_path.exists()
+        run.finish()
+
+    def test_manifest_multiple_output_types(self, tmp_path):
+        run = euler_train.init(dir=str(tmp_path / "r"), config={})
+        img = np.zeros((4, 4, 3), dtype=np.uint8)
+        dep = np.ones((4, 4), dtype=np.float32)
+        run.save_outputs(epoch=0, step=0, rgb=dict(pred=img), depth=dict(pred=dep))
+
+        m = _read_json(run.dir / "outputs" / "epoch_0_step_0" / "manifest.json")
+        assert m["output_types"]["rgb"]["pred"]["files"][0]["format"] == "png"
+        assert m["output_types"]["depth"]["pred"]["files"][0]["format"] == "npy"
+        run.finish()
+
+
+# ═══════════════════════════════════════════════════════════════════════════
 #  init_checkpoint_dir
 # ═══════════════════════════════════════════════════════════════════════════
 
@@ -1766,14 +1922,13 @@ class TestStreaming:
         assert "elapsed_sec" not in val_event["records"][0]
 
         snapshot_event = consumer.events[5]
-        assert snapshot_event["snapshot"] == {
-            "epoch": 0,
-            "step": 1,
-            "types": {
-                "depth": ["aux/transmission"],
-                "rgb": ["gt", "pred"],
-            },
-        }
+        snapshot = snapshot_event["snapshot"]
+        assert snapshot["version"] == 1
+        assert snapshot["epoch"] == 0
+        assert snapshot["step"] == 1
+        assert set(snapshot["output_types"]) == {"rgb", "depth"}
+        assert set(snapshot["output_types"]["rgb"]) == {"pred", "gt"}
+        assert "aux/transmission" in snapshot["output_types"]["depth"]
 
         checkpoint_event = consumer.events[6]
         assert checkpoint_event["checkpoint"] == {
