@@ -68,10 +68,19 @@ def _save_slot(
     visualization_overrides: dict[str, Any],
 ) -> None:
     slot_dir.mkdir(parents=True, exist_ok=True)
-    items = _unpack(data)
     visualization = _resolve_visualization(
         output_type, leaf_name, visualization_overrides,
     )
+
+    # Dict with string keys → named outputs (e.g. {"scene_042": img}).
+    if isinstance(data, dict):
+        for name, raw in data.items():
+            item = _prepare(raw)
+            fmt = _resolve_format(item, output_type, leaf_name, format_overrides)
+            _save_item(slot_dir / f"{name}.{fmt}", item, fmt, visualization)
+        return
+
+    items = _unpack(data)
     for idx, item in enumerate(items):
         fmt = _resolve_format(item, output_type, leaf_name, format_overrides)
         _save_item(slot_dir / f"{idx:04d}.{fmt}", item, fmt, visualization)

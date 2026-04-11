@@ -1444,6 +1444,42 @@ class TestSaveOutputsVariants:
         assert path.name == "epoch_2_step_500"
         run.finish()
 
+    def test_dict_slot_produces_named_files(self, tmp_path):
+        run = euler_train.init(dir=str(tmp_path / "r"), config={})
+        a = np.zeros((4, 4, 3), dtype=np.uint8)
+        b = np.ones((4, 4, 3), dtype=np.uint8) * 128
+        run.save_outputs(epoch=0, step=0, rgb=dict(pred={"scene_a": a, "scene_b": b}))
+
+        pred_dir = run.dir / "outputs" / "epoch_0_step_0" / "rgb" / "pred"
+        names = sorted(f.name for f in pred_dir.iterdir())
+        assert names == ["scene_a.png", "scene_b.png"]
+        run.finish()
+
+    def test_dict_slot_in_aux(self, tmp_path):
+        run = euler_train.init(dir=str(tmp_path / "r"), config={})
+        m1 = np.ones((4, 4), dtype=np.float32)
+        m2 = np.zeros((4, 4), dtype=np.float32)
+        run.save_outputs(
+            epoch=0, step=0,
+            depth=dict(aux=dict(attn={"head_0": m1, "head_1": m2})),
+        )
+
+        attn_dir = run.dir / "outputs" / "epoch_0_step_0" / "depth" / "aux" / "attn"
+        names = sorted(f.name for f in attn_dir.iterdir())
+        assert names == ["head_0.npy", "head_1.npy"]
+        run.finish()
+
+    def test_mixed_dict_and_array_slots(self, tmp_path):
+        run = euler_train.init(dir=str(tmp_path / "r"), config={})
+        a = np.zeros((4, 4, 3), dtype=np.uint8)
+        run.save_outputs(epoch=0, step=0, rgb=dict(pred={"frame_x": a}, gt=a))
+
+        pred_dir = run.dir / "outputs" / "epoch_0_step_0" / "rgb" / "pred"
+        gt_dir = run.dir / "outputs" / "epoch_0_step_0" / "rgb" / "gt"
+        assert sorted(f.name for f in pred_dir.iterdir()) == ["frame_x.png"]
+        assert sorted(f.name for f in gt_dir.iterdir()) == ["0000.png"]
+        run.finish()
+
     def test_returns_output_base_path(self, tmp_path):
         run = euler_train.init(dir=str(tmp_path / "r"), config={})
         arr = np.zeros((4, 4, 3), dtype=np.uint8)

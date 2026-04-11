@@ -375,6 +375,14 @@ class Run:
                             aux=dict(transmission=t_map)),
             )
 
+        Slot values can also be dicts mapping custom string IDs to
+        items, producing named files instead of sequential indices::
+
+            run.save_outputs(
+                epoch=1, step=500,
+                rgb=dict(pred={"scene_042": img_a, "scene_117": img_b}),
+            )
+
         Accepted slot keys: ``pred``, ``gt``, ``input``, ``aux``.
         ``aux`` expects a sub-dict of named arrays.
 
