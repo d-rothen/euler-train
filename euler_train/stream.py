@@ -56,6 +56,8 @@ class EulerViewStreamConfig:
     api_token: str | None = None
     access_token: str | None = None
     stream_token: str | None = None
+    stream_attach_token: str | None = None
+    launch_id: str | None = None
     datasource_id: int | None = None
     euler_train_dir: str | None = None
     run_dir: str | None = None
@@ -84,6 +86,24 @@ class EulerViewStreamConfig:
             self.stream_token,
             field_name="stream.stream_token",
         )
+        self.stream_attach_token = _normalize_optional_text(
+            self.stream_attach_token,
+            field_name="stream.stream_attach_token",
+        )
+        self.launch_id = _normalize_optional_text(
+            self.launch_id,
+            field_name="stream.launch_id",
+        )
+        if (
+            self.stream_attach_token is not None
+            and self.launch_id is not None
+            and self.stream_attach_token != self.launch_id
+        ):
+            raise ValueError(
+                "stream.stream_attach_token and stream.launch_id must match when both are provided",
+            )
+        if self.stream_attach_token is None:
+            self.stream_attach_token = self.launch_id
         self.euler_train_dir = _normalize_optional_text(
             self.euler_train_dir,
             field_name="stream.euler_train_dir",
@@ -191,6 +211,7 @@ class EulerViewStreamConsumer:
         self._context: StreamContext | None = None
         self._pending: list[dict[str, Any]] = []
         self._stream_token: str | None = config.stream_token
+        self._resolved_stream_attach_token: str | None = config.stream_attach_token
         self._session_expires_at = float("inf") if config.stream_token else 0.0
         self._ingest_url = f"{self.config.base_url}/api/model-run-stream/ingest"
         self._last_flush_at = 0.0
@@ -299,6 +320,14 @@ class EulerViewStreamConsumer:
             "runDir": self.config.run_dir or str(self._context.run_dir),
             "eulerTrainDir": self.config.euler_train_dir or str(self._context.runs_dir),
         }
+        stream_attach_token = (
+            self.config.stream_attach_token or self._resolved_stream_attach_token
+        )
+        if stream_attach_token is not None:
+            session_body["streamAttachToken"] = stream_attach_token
+        slurm_job_id = _extract_slurm_job_id(self._context.meta)
+        if slurm_job_id is not None:
+            session_body["slurmJobId"] = slurm_job_id
         if self.config.datasource_id is not None:
             session_body["datasourceId"] = self.config.datasource_id
         if self.config.session_expires_in_sec is not None:
@@ -327,6 +356,10 @@ class EulerViewStreamConsumer:
             self._ingest_url = ingest_url.strip()
         else:
             self._ingest_url = f"{self.config.base_url}/api/model-run-stream/ingest"
+
+        resolved_stream_attach_token = _extract_session_stream_attach_token(payload)
+        if resolved_stream_attach_token is not None:
+            self._resolved_stream_attach_token = resolved_stream_attach_token
 
         self._session_expires_at = _parse_timestamp(payload.get("expiresAt"))
         self._next_retry_at = 0.0
@@ -448,6 +481,12 @@ def _config_from_mapping(raw: Mapping[str, Any]) -> EulerViewStreamConfig:
         access_token=_mapping_get(raw, "access_token", "accessToken"),
         api_token=_mapping_get(raw, "api_token", "apiToken"),
         stream_token=_mapping_get(raw, "stream_token", "streamToken"),
+        stream_attach_token=_mapping_get(
+            raw,
+            "stream_attach_token",
+            "streamAttachToken",
+        ),
+        launch_id=_mapping_get(raw, "launch_id", "launchId"),
         datasource_id=_mapping_get(raw, "datasource_id", "datasourceId"),
         euler_train_dir=_mapping_get(raw, "euler_train_dir", "eulerTrainDir"),
         run_dir=_mapping_get(raw, "run_dir", "runDir"),
@@ -482,6 +521,45 @@ def _mapping_get(
         if name in mapping:
             return mapping[name]
     return default
+
+
+def _extract_slurm_job_id(meta: Mapping[str, Any] | None) -> int | None:
+    if not isinstance(meta, Mapping):
+        return None
+    slurm = meta.get("slurm")
+    if not isinstance(slurm, Mapping):
+        return None
+    raw = slurm.get("job_id")
+    if isinstance(raw, bool):
+        return None
+    if isinstance(raw, int):
+        return raw if raw > 0 else None
+    if isinstance(raw, float):
+        return int(raw) if raw.is_integer() and raw > 0 else None
+    if isinstance(raw, str):
+        text = raw.strip()
+        if not text:
+            return None
+        try:
+            value = int(text, 10)
+        except ValueError:
+            return None
+        return value if value > 0 else None
+    return None
+
+
+def _extract_session_stream_attach_token(payload: Mapping[str, Any]) -> str | None:
+    run = payload.get("run")
+    if not isinstance(run, Mapping):
+        return None
+    stream_attach_token = run.get("streamAttachToken")
+    if not isinstance(stream_attach_token, str):
+        legacy_launch_id = run.get("launchId")
+        if not isinstance(legacy_launch_id, str):
+            return None
+        stream_attach_token = legacy_launch_id
+    normalized = stream_attach_token.strip()
+    return normalized or None
 
 
 def _normalize_optional_text(

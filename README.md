@@ -67,6 +67,7 @@ Each `euler_train.init(dir=...)` call creates a timestamped subdirectory under `
         │   └── epoch_{N}.pt
         └── outputs/
             └── epoch_{N}_step_{M}/
+                ├── manifest.json
                 └── {output_type}/
                     ├── pred/
                     ├── gt/
@@ -112,7 +113,7 @@ run.log({"rgb.psnr": 28.3, "depth.mae": 0.03}, step=100, epoch=1, mode="val")
 
 ---
 
-### `run.save_outputs(*, epoch=None, step=None, **output_types)`
+### `run.save_outputs(*, epoch=None, step=None, metadata=None, **output_types)`
 
 Saves arrays/images to `outputs/epoch_{N}_step_{M}/{output_type}/{slot}/`.
 
@@ -125,10 +126,11 @@ Each output type is a dict with these slot keys:
 | `input` | Model input |
 | `aux` | Dict of named auxiliary outputs (each becomes a subdirectory) |
 
-Values can be:
+Slot values can be:
 - A single numpy array, torch tensor, or PIL Image
 - A list of the above (saved as `0000.ext`, `0001.ext`, ...)
 - A 4D numpy/torch array (split along dim 0 as a batch)
+- A dict mapping custom string IDs to items (saved as `{id}.ext`)
 
 ```python
 run.save_outputs(
@@ -140,6 +142,61 @@ run.save_outputs(
         aux=dict(transmission=t_map, attention=attn_map),
     ),
 )
+```
+
+#### Named sample IDs
+
+When slot values are dicts with string keys, files are saved with the key as the basename instead of sequential indices. This is useful for matching outputs back to specific input samples:
+
+```python
+run.save_outputs(
+    epoch=1, step=500,
+    rgb=dict(pred={"scene_042": img_a, "scene_117": img_b}),
+)
+# produces: rgb/pred/scene_042.png, rgb/pred/scene_117.png
+```
+
+#### Source metadata
+
+The optional `metadata` parameter attaches dataset provenance and other context to the output manifest. When provided, the `dataset` key is required and must be a non-empty string:
+
+```python
+run.save_outputs(
+    epoch=1, step=500,
+    metadata={"dataset": "vkitti2", "split": "val", "scene": "0001"},
+    rgb=dict(pred={"frame_042": img_a}),
+)
+```
+
+#### Output manifest
+
+Each `save_outputs` call writes a `manifest.json` alongside the saved files, recording what was written and how. The manifest is also streamed via the `output_snapshot` event when streaming is active.
+
+```json
+{
+  "version": 1,
+  "epoch": 1,
+  "step": 500,
+  "metadata": {"dataset": "vkitti2", "split": "val"},
+  "output_types": {
+    "rgb": {
+      "pred": {
+        "id_mode": "named",
+        "files": [
+          {"sample_id": "scene_042", "filename": "scene_042.png", "format": "png"}
+        ]
+      },
+      "gt": {
+        "id_mode": "indexed",
+        "files": [
+          {"sample_id": 0, "filename": "0000.png", "format": "png"}
+        ]
+      }
+    }
+  },
+  "format_overrides": {},
+  "visualization_overrides": {}
+}
 ```
 
 Torch tensors in `(C,H,W)` or `(B,C,H,W)` layout are automatically transposed to channels-last before saving.
