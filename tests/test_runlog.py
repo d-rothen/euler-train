@@ -1963,7 +1963,7 @@ class TestStreaming:
                     "timeout": timeout,
                 },
             )
-            if request.full_url.endswith("/stream/session"):
+            if request.full_url == "https://sync.example/api/model-run-stream/session":
                 return _FakeHttpResponse(
                     {
                         "token": "stream-token",
@@ -1997,12 +1997,12 @@ class TestStreaming:
         run.log({"loss": 0.25}, step=3, epoch=1)
         run.finish()
 
-        assert calls[0]["url"] == (
-            f"https://sync.example/api/models/42/runs/{run.run_id}/stream/session"
-        )
+        assert calls[0]["url"] == "https://sync.example/api/model-run-stream/session"
         assert calls[0]["method"] == "POST"
         assert calls[0]["headers"]["authorization"] == "Bearer user-token"
         assert calls[0]["body"] == {
+            "runId": run.run_id,
+            "modelId": 42,
             "runDir": str(run.dir),
             "eulerTrainDir": str(run.dir.parent),
             "datasourceId": 7,
@@ -2027,6 +2027,73 @@ class TestStreaming:
 
         finish_event = ingest_calls[2]["body"]["events"][0]
         assert finish_event["status"] == "completed"
+
+    def test_euler_view_http_consumer_can_handshake_without_model_id_when_attach_token_is_present(
+        self,
+        tmp_path,
+        monkeypatch,
+    ):
+        calls: list[dict] = []
+
+        def fake_urlopen(request, timeout=0):
+            headers = {k.lower(): v for k, v in request.header_items()}
+            body = json.loads(request.data.decode("utf-8"))
+            calls.append(
+                {
+                    "url": request.full_url,
+                    "method": request.get_method(),
+                    "headers": headers,
+                    "body": body,
+                    "timeout": timeout,
+                },
+            )
+            if request.full_url.endswith("/api/model-run-stream/session"):
+                return _FakeHttpResponse(
+                    {
+                        "token": "stream-token",
+                        "expiresAt": "2099-01-01T00:00:00+00:00",
+                        "ingestUrl": "https://sync.example/api/model-run-stream/ingest",
+                        "run": {
+                            "modelId": 42,
+                            "runId": "placeholder",
+                            "streamAttachToken": "attach-123",
+                        },
+                    },
+                )
+            if request.full_url.endswith("/api/model-run-stream/ingest"):
+                return _FakeHttpResponse(
+                    {
+                        "success": True,
+                        "events": [],
+                        "latestCursor": len(calls),
+                    },
+                )
+            raise AssertionError(f"Unexpected URL {request.full_url}")
+
+        monkeypatch.setattr(stream_mod, "urlopen", fake_urlopen)
+
+        run = euler_train.init(
+            dir=str(tmp_path / "r"),
+            config={"lr": 1e-3},
+            stream={
+                "base_url": "https://sync.example",
+                "api_token": "user-token",
+                "stream_attach_token": "attach-123",
+                "batch_size": 1,
+            },
+        )
+        run.log({"loss": 0.25}, step=3, epoch=1)
+        run.finish()
+
+        assert calls[0]["url"] == "https://sync.example/api/model-run-stream/session"
+        assert calls[0]["method"] == "POST"
+        assert calls[0]["headers"]["authorization"] == "Bearer user-token"
+        assert calls[0]["body"] == {
+            "runId": run.run_id,
+            "runDir": str(run.dir),
+            "eulerTrainDir": str(run.dir.parent),
+            "streamAttachToken": "attach-123",
+        }
 
     def test_stream_network_failures_do_not_break_training(
         self,
@@ -2072,7 +2139,7 @@ class TestStreaming:
                     "timeout": timeout,
                 },
             )
-            if request.full_url.endswith("/stream/check"):
+            if request.full_url == "https://sync.example/api/model-run-stream/check":
                 return _FakeHttpResponse(
                     {
                         "success": True,
@@ -2096,7 +2163,6 @@ class TestStreaming:
         payload = stream_mod.check_stream_handshake(
             {
                 "base_url": "https://sync.example",
-                "model_id": 42,
                 "api_token": "user-token",
                 "stream_attach_token": "attach-123",
                 "datasource_id": 7,
@@ -2107,7 +2173,7 @@ class TestStreaming:
         assert payload["success"] is True
         assert calls == [
             {
-                "url": "https://sync.example/api/models/42/runs/dry-run-1/stream/check",
+                "url": "https://sync.example/api/model-run-stream/check",
                 "method": "POST",
                 "headers": {
                     "accept": "application/json",
@@ -2115,6 +2181,7 @@ class TestStreaming:
                     "content-type": "application/json",
                 },
                 "body": {
+                    "runId": "dry-run-1",
                     "streamAttachToken": "attach-123",
                     "datasourceId": 7,
                 },
@@ -2128,7 +2195,7 @@ class TestStreaming:
         capsys,
     ):
         def fake_urlopen(request, timeout=0):
-            if not request.full_url.endswith("/stream/check"):
+            if request.full_url != "https://sync.example/api/model-run-stream/check":
                 raise AssertionError(f"Unexpected URL {request.full_url}")
             return _FakeHttpResponse(
                 {
@@ -2153,12 +2220,12 @@ class TestStreaming:
             [
                 "--api-url",
                 "https://sync.example",
-                "--model-id",
-                "42",
                 "--api-key",
                 "user-token",
                 "--run-id",
                 "dry-run-2",
+                "--stream-attach-token",
+                "attach-123",
                 "--json",
             ],
         )

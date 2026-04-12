@@ -14,7 +14,11 @@ def build_parser() -> argparse.ArgumentParser:
         description="Dry-run the Euler View stream handshake",
     )
     parser.add_argument("--api-url", required=True, help="Euler View base URL")
-    parser.add_argument("--model-id", required=True, type=int, help="Euler View model ID")
+    parser.add_argument(
+        "--model-id",
+        type=int,
+        help="Euler View model ID. Required when using the SLURM fallback path instead of --stream-attach-token.",
+    )
     parser.add_argument(
         "--api-key",
         required=True,
@@ -63,6 +67,9 @@ def build_parser() -> argparse.ArgumentParser:
 def main(argv: Sequence[str] | None = None) -> int:
     parser = build_parser()
     args = parser.parse_args(argv)
+
+    if args.model_id is None and not args.stream_attach_token:
+        parser.error("--model-id is required unless --stream-attach-token is provided")
 
     try:
         result = check_stream_handshake(

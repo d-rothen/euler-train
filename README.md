@@ -64,9 +64,9 @@ run = euler_train.init(
     config=cfg,
     stream={
         "base_url": os.environ["EULER_VIEW_BASE_URL"],
-        "model_id": 42,
         "api_token": os.environ["EULER_VIEW_API_TOKEN"],
         "stream_attach_token": os.environ.get("EULER_VIEW_STREAM_ATTACH_TOKEN"),
+        "model_id": 42,  # only needed for the SLURM fallback path
     },
 )
 ```
@@ -74,7 +74,7 @@ run = euler_train.init(
 What each field is for:
 
 - `base_url`: Euler View server base URL, for example `https://view.example.com`.
-- `model_id`: Euler View model that should receive this run.
+- `model_id`: Euler View model that should receive this run. This is optional when `stream_attach_token` is provided, and required for the SLURM fallback path.
 - `api_token` or `access_token`: credential used to open a stream session. This is required whenever the package needs to negotiate its own short-lived ingest token, even if `stream_attach_token` is also provided.
 - `stream_attach_token`: optional opaque launch-attachment token. When present, the producer sends it during the session handshake and Euler View attaches the stream to that launch directly. This is the preferred path for interactive or otherwise non-SLURM launches. Internally Euler View currently maps this token to `model_launches.id`, but the package treats it as an opaque token.
 - `stream_token`: optional pre-issued ingest token. If you pass this, the package skips the session handshake entirely and posts events directly to the ingest endpoint.
@@ -85,9 +85,9 @@ What each field is for:
 How the handshake works:
 
 1. `euler_train` creates the local run directory and writes `meta.json`, `config.json`, and the other standard files as usual.
-2. When the first stream flush happens, the package requests a session from Euler View at `/api/models/{model_id}/runs/{run_id}/stream/session`.
+2. When the first stream flush happens, the package requests a session from Euler View at `POST /api/model-run-stream/session`.
 3. If `stream_attach_token` is configured, it is sent as `streamAttachToken` and used as the explicit launch attachment key.
-4. If no `stream_attach_token` is configured, the package falls back to the SLURM metadata already captured in `meta.json["slurm"]["job_id"]`.
+4. If no `stream_attach_token` is configured, the package falls back to the SLURM metadata already captured in `meta.json["slurm"]["job_id"]`. In that fallback mode, `model_id` must be configured so Euler View knows which model namespace to match against.
 5. Euler View returns a short-lived ingest token plus the canonical `streamAttachToken`; the package caches that returned token and reuses it on later session refreshes.
 6. Subsequent events are sent to `/api/model-run-stream/ingest`.
 
@@ -100,27 +100,25 @@ If you need to verify from a cluster node whether Euler View is reachable and wh
 ```bash
 euler-train.stream.check \
   --api-url https://view.example.com \
-  --model-id 42 \
   --api-key "$EULER_VIEW_API_TOKEN" \
   --stream-attach-token "$EULER_VIEW_STREAM_ATTACH_TOKEN"
 ```
 
-This command calls:
-
-- `POST /api/models/{model_id}/runs/{run_id}/stream/check`
+This command calls `POST /api/model-run-stream/check`.
 
 It validates:
 
 - network reachability to Euler View
 - API token validity and scope
-- model existence
 - stream attachment resolution via `stream_attach_token`, when provided
+- model existence, when the request uses the `model_id` + `--slurm-job-id` fallback path
 - SLURM fallback matching via `--slurm-job-id`, when no attach token is provided
 
 Useful flags:
 
 - `--run-id`: override the dry-run run ID. If omitted, the CLI generates a temporary `stream-check-*` ID.
 - `--stream-attach-token`: test the explicit launch attachment path.
+- `--model-id`: required for the fallback SLURM matching path, optional when `--stream-attach-token` is used.
 - `--slurm-job-id`: test the fallback SLURM matching path.
 - `--datasource-id`: include the datasource hint that a real stream session would send.
 - `--euler-train-dir` and `--run-dir`: include path hints in the dry-run payload.
@@ -131,8 +129,8 @@ The dry-run check does not start a run and does not mint an ingest token. It onl
 What has to be configured where:
 
 - In the training script or job wrapper: pass `stream={...}` to `euler_train.init(...)`.
-- In Euler View / the launcher: if the run should attach to a specific launch regardless of SLURM availability, provide a `stream_attach_token` to the runtime and forward it into the `stream` config.
-- Under plain SLURM launches: no extra attachment config is required as long as Euler View can uniquely match the run by `slurm.job_id`.
+- In Euler View / the launcher: if the run should attach to a specific launch regardless of SLURM availability, provide a `stream_attach_token` to the runtime and forward it into the `stream` config. In that mode the producer does not need to know `model_id`.
+- Under plain SLURM launches: no extra attachment config is required as long as Euler View can uniquely match the run by `slurm.job_id`, but `model_id` still has to be configured for the fallback lookup.
 - If neither `stream_attach_token` nor a unique SLURM match is available, run streaming still works, but launch-to-run linking in Euler View may remain unresolved.
 
 For new integrations, prefer `stream_attach_token`. The older `launch_id` / `launchId` config keys are still accepted as compatibility aliases, but new code should treat the attachment value as an opaque stream token rather than a launch ID.

@@ -11,7 +11,6 @@ from datetime import datetime
 from pathlib import Path
 from typing import Any, Protocol
 from urllib.error import HTTPError, URLError
-from urllib.parse import quote
 from urllib.request import Request, urlopen
 
 from .serialization import _json_default
@@ -146,9 +145,9 @@ class EulerViewStreamConfig:
         )
 
         if self.stream_token is None:
-            if self.model_id is None:
+            if self.model_id is None and self.stream_attach_token is None:
                 raise ValueError(
-                    "stream.model_id is required when stream.stream_token is not provided",
+                    "stream.model_id is required when neither stream.stream_token nor stream.stream_attach_token is provided",
                 )
             if self.api_token is None and self.access_token is None:
                 raise ValueError(
@@ -312,11 +311,10 @@ class EulerViewStreamConsumer:
         if not force and now < self._next_retry_at:
             return False
 
-        session_url = (
-            f"{self.config.base_url}/api/models/{self.config.model_id}"
-            f"/runs/{quote(self._context.run_id, safe='')}/stream/session"
-        )
+        session_url = f"{self.config.base_url}/api/model-run-stream/session"
         session_body = _build_stream_session_body(
+            run_id=self._context.run_id,
+            model_id=self.config.model_id,
             run_dir=self.config.run_dir or str(self._context.run_dir),
             euler_train_dir=self.config.euler_train_dir or str(self._context.runs_dir),
             stream_attach_token=(
@@ -447,9 +445,6 @@ def check_stream_handshake(
             "stream.stream_token bypasses the session handshake; a dry-run handshake requires api_token or access_token instead",
         )
 
-    if resolved_config.model_id is None:
-        raise ValueError("stream.model_id is required for handshake checks")
-
     normalized_run_id = (
         _normalize_optional_text(run_id, field_name="run_id")
         if run_id is not None
@@ -472,6 +467,13 @@ def check_stream_handshake(
     ):
         raise ValueError(
             "stream_attach_token argument does not match stream.stream_attach_token",
+        )
+    resolved_stream_attach_token = (
+        normalized_stream_attach_token or resolved_config.stream_attach_token
+    )
+    if resolved_config.model_id is None and resolved_stream_attach_token is None:
+        raise ValueError(
+            "stream.model_id is required for handshake checks when stream_attach_token is not provided",
         )
 
     resolved_datasource_id = (
@@ -506,16 +508,13 @@ def check_stream_handshake(
         else resolved_config.run_dir
     )
 
-    url = (
-        f"{resolved_config.base_url}/api/models/{resolved_config.model_id}"
-        f"/runs/{quote(normalized_run_id, safe='')}/stream/check"
-    )
+    url = f"{resolved_config.base_url}/api/model-run-stream/check"
     payload = _build_stream_session_body(
+        run_id=normalized_run_id,
+        model_id=resolved_config.model_id,
         run_dir=resolved_run_dir,
         euler_train_dir=resolved_euler_train_dir,
-        stream_attach_token=(
-            normalized_stream_attach_token or resolved_config.stream_attach_token
-        ),
+        stream_attach_token=resolved_stream_attach_token,
         slurm_job_id=resolved_slurm_job_id,
         datasource_id=resolved_datasource_id,
         session_expires_in_sec=resolved_config.session_expires_in_sec,
@@ -633,6 +632,8 @@ def _extract_session_stream_attach_token(payload: Mapping[str, Any]) -> str | No
 
 def _build_stream_session_body(
     *,
+    run_id: str,
+    model_id: int | None,
     run_dir: str | None,
     euler_train_dir: str | None,
     stream_attach_token: str | None,
@@ -640,7 +641,9 @@ def _build_stream_session_body(
     datasource_id: int | None,
     session_expires_in_sec: int | None,
 ) -> dict[str, Any]:
-    body: dict[str, Any] = {}
+    body: dict[str, Any] = {"runId": run_id}
+    if model_id is not None:
+        body["modelId"] = model_id
     if run_dir is not None:
         body["runDir"] = run_dir
     if euler_train_dir is not None:
