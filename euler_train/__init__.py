@@ -12,6 +12,7 @@ from .stream import (
     OutputStream,
     OutputStreamConsumer,
     StreamContext,
+    check_stream_handshake,
 )
 
 __all__ = [
@@ -20,6 +21,7 @@ __all__ = [
     "OutputStream",
     "OutputStreamConsumer",
     "StreamContext",
+    "check_stream_handshake",
     "init",
     "Run",
     "export_architecture",

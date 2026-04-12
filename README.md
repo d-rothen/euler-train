@@ -75,7 +75,7 @@ What each field is for:
 
 - `base_url`: Euler View server base URL, for example `https://view.example.com`.
 - `model_id`: Euler View model that should receive this run.
-- `api_token` or `access_token`: credential used to open a stream session. This is the normal choice when the package should negotiate its own short-lived ingest token.
+- `api_token` or `access_token`: credential used to open a stream session. This is required whenever the package needs to negotiate its own short-lived ingest token, even if `stream_attach_token` is also provided.
 - `stream_attach_token`: optional opaque launch-attachment token. When present, the producer sends it during the session handshake and Euler View attaches the stream to that launch directly. This is the preferred path for interactive or otherwise non-SLURM launches. Internally Euler View currently maps this token to `model_launches.id`, but the package treats it as an opaque token.
 - `stream_token`: optional pre-issued ingest token. If you pass this, the package skips the session handshake entirely and posts events directly to the ingest endpoint.
 - `datasource_id`: optional Euler View datasource hint for the run record.
@@ -90,6 +90,43 @@ How the handshake works:
 4. If no `stream_attach_token` is configured, the package falls back to the SLURM metadata already captured in `meta.json["slurm"]["job_id"]`.
 5. Euler View returns a short-lived ingest token plus the canonical `streamAttachToken`; the package caches that returned token and reuses it on later session refreshes.
 6. Subsequent events are sent to `/api/model-run-stream/ingest`.
+
+`stream_attach_token` is only the attachment/correlation key. It does not authenticate the session request by itself. In the current implementation you still need `api_token` or `access_token` for the session handshake, unless you already have a pre-issued `stream_token`.
+
+### Dry-run connectivity check
+
+If you need to verify from a cluster node whether Euler View is reachable and whether the stream handshake would be accepted before starting a real run, the package exposes the same dry-run check used by the stream protocol:
+
+```bash
+euler-train.stream.check \
+  --api-url https://view.example.com \
+  --model-id 42 \
+  --api-key "$EULER_VIEW_API_TOKEN" \
+  --stream-attach-token "$EULER_VIEW_STREAM_ATTACH_TOKEN"
+```
+
+This command calls:
+
+- `POST /api/models/{model_id}/runs/{run_id}/stream/check`
+
+It validates:
+
+- network reachability to Euler View
+- API token validity and scope
+- model existence
+- stream attachment resolution via `stream_attach_token`, when provided
+- SLURM fallback matching via `--slurm-job-id`, when no attach token is provided
+
+Useful flags:
+
+- `--run-id`: override the dry-run run ID. If omitted, the CLI generates a temporary `stream-check-*` ID.
+- `--stream-attach-token`: test the explicit launch attachment path.
+- `--slurm-job-id`: test the fallback SLURM matching path.
+- `--datasource-id`: include the datasource hint that a real stream session would send.
+- `--euler-train-dir` and `--run-dir`: include path hints in the dry-run payload.
+- `--json`: print the raw JSON response for automation.
+
+The dry-run check does not start a run and does not mint an ingest token. It only verifies that the real session handshake would be accepted with the same request shape.
 
 What has to be configured where:
 

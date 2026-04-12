@@ -16,5 +16,8 @@ architecture = ["onnx", "onnxruntime", "onnxsim"]
 naming = ["euler-metric-naming"]
 dev = ["pytest", "Pillow", "torch", "nvidia-ml-py", "onnx", "onnxruntime", "onnxsim"]
 
+[project.scripts]
+"euler-train.stream.check" = "euler_train.stream_check_cli:main"
+
 [tool.pytest.ini_options]
 pythonpath = ["."]

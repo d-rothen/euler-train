@@ -16,6 +16,7 @@ from PIL import Image
 
 import euler_train
 import euler_train.stream as stream_mod
+from euler_train.stream_check_cli import main as stream_check_cli_main
 
 # ═══════════════════════════════════════════════════════════════════════════
 #  Helpers
@@ -2052,6 +2053,121 @@ class TestStreaming:
 
         meta = _read_json(run.dir / "meta.json")
         assert meta["status"] == "completed"
+
+    def test_check_stream_handshake_uses_dry_run_route(
+        self,
+        monkeypatch,
+    ):
+        calls: list[dict] = []
+
+        def fake_urlopen(request, timeout=0):
+            headers = {k.lower(): v for k, v in request.header_items()}
+            body = json.loads(request.data.decode("utf-8"))
+            calls.append(
+                {
+                    "url": request.full_url,
+                    "method": request.get_method(),
+                    "headers": headers,
+                    "body": body,
+                    "timeout": timeout,
+                },
+            )
+            if request.full_url.endswith("/stream/check"):
+                return _FakeHttpResponse(
+                    {
+                        "success": True,
+                        "resolution": "stream_attach_token",
+                        "ingestUrl": "https://sync.example/api/model-run-stream/ingest",
+                        "run": {
+                            "modelId": 42,
+                            "runId": "dry-run-1",
+                            "streamAttachToken": "attach-123",
+                            "launchId": "launch-abc",
+                            "datasourceId": 7,
+                            "eulerTrainDir": "/outputs",
+                            "runDir": "/outputs/dry-run-1",
+                        },
+                    },
+                )
+            raise AssertionError(f"Unexpected URL {request.full_url}")
+
+        monkeypatch.setattr(stream_mod, "urlopen", fake_urlopen)
+
+        payload = stream_mod.check_stream_handshake(
+            {
+                "base_url": "https://sync.example",
+                "model_id": 42,
+                "api_token": "user-token",
+                "stream_attach_token": "attach-123",
+                "datasource_id": 7,
+            },
+            run_id="dry-run-1",
+        )
+
+        assert payload["success"] is True
+        assert calls == [
+            {
+                "url": "https://sync.example/api/models/42/runs/dry-run-1/stream/check",
+                "method": "POST",
+                "headers": {
+                    "accept": "application/json",
+                    "authorization": "Bearer user-token",
+                    "content-type": "application/json",
+                },
+                "body": {
+                    "streamAttachToken": "attach-123",
+                    "datasourceId": 7,
+                },
+                "timeout": 10.0,
+            },
+        ]
+
+    def test_stream_check_cli_prints_json_payload(
+        self,
+        monkeypatch,
+        capsys,
+    ):
+        def fake_urlopen(request, timeout=0):
+            if not request.full_url.endswith("/stream/check"):
+                raise AssertionError(f"Unexpected URL {request.full_url}")
+            return _FakeHttpResponse(
+                {
+                    "success": True,
+                    "resolution": "unresolved",
+                    "ingestUrl": "https://sync.example/api/model-run-stream/ingest",
+                    "run": {
+                        "modelId": 42,
+                        "runId": "dry-run-2",
+                        "streamAttachToken": None,
+                        "launchId": None,
+                        "datasourceId": None,
+                        "eulerTrainDir": None,
+                        "runDir": None,
+                    },
+                },
+            )
+
+        monkeypatch.setattr(stream_mod, "urlopen", fake_urlopen)
+
+        exit_code = stream_check_cli_main(
+            [
+                "--api-url",
+                "https://sync.example",
+                "--model-id",
+                "42",
+                "--api-key",
+                "user-token",
+                "--run-id",
+                "dry-run-2",
+                "--json",
+            ],
+        )
+
+        assert exit_code == 0
+        payload = json.loads(capsys.readouterr().out)
+        assert payload["success"] is True
+        assert payload["resolution"] == "unresolved"
+        assert payload["run"]["runId"] == "dry-run-2"
 
 
 # ═══════════════════════════════════════════════════════════════════════════

@@ -316,22 +316,17 @@ class EulerViewStreamConsumer:
             f"{self.config.base_url}/api/models/{self.config.model_id}"
             f"/runs/{quote(self._context.run_id, safe='')}/stream/session"
         )
-        session_body: dict[str, Any] = {
-            "runDir": self.config.run_dir or str(self._context.run_dir),
-            "eulerTrainDir": self.config.euler_train_dir or str(self._context.runs_dir),
-        }
-        stream_attach_token = (
-            self.config.stream_attach_token or self._resolved_stream_attach_token
+        session_body = _build_stream_session_body(
+            run_dir=self.config.run_dir or str(self._context.run_dir),
+            euler_train_dir=self.config.euler_train_dir or str(self._context.runs_dir),
+            stream_attach_token=(
+                self.config.stream_attach_token
+                or self._resolved_stream_attach_token
+            ),
+            slurm_job_id=_extract_slurm_job_id(self._context.meta),
+            datasource_id=self.config.datasource_id,
+            session_expires_in_sec=self.config.session_expires_in_sec,
         )
-        if stream_attach_token is not None:
-            session_body["streamAttachToken"] = stream_attach_token
-        slurm_job_id = _extract_slurm_job_id(self._context.meta)
-        if slurm_job_id is not None:
-            session_body["slurmJobId"] = slurm_job_id
-        if self.config.datasource_id is not None:
-            session_body["datasourceId"] = self.config.datasource_id
-        if self.config.session_expires_in_sec is not None:
-            session_body["expiresInSec"] = self.config.session_expires_in_sec
 
         try:
             payload = self._post_json(
@@ -372,43 +367,12 @@ class EulerViewStreamConsumer:
         *,
         token: str | None,
     ) -> dict[str, Any]:
-        headers = {
-            "Accept": "application/json",
-            "Content-Type": "application/json",
-        }
-        if token:
-            headers["Authorization"] = f"Bearer {token}"
-
-        request = Request(
+        return _post_json_request(
             url,
-            data=json.dumps(payload, default=_json_default).encode("utf-8"),
-            headers=headers,
-            method="POST",
+            payload,
+            token=token,
+            timeout_sec=self.config.timeout_sec,
         )
-
-        try:
-            with urlopen(request, timeout=self.config.timeout_sec) as response:
-                raw = response.read()
-        except HTTPError as exc:
-            message = _extract_http_error_message(exc)
-            raise RuntimeError(message) from exc
-        except URLError as exc:
-            reason = exc.reason if exc.reason else str(exc)
-            raise RuntimeError(str(reason)) from exc
-        except OSError as exc:
-            raise RuntimeError(str(exc)) from exc
-
-        if not raw:
-            return {}
-
-        try:
-            parsed = json.loads(raw.decode("utf-8"))
-        except json.JSONDecodeError as exc:
-            raise RuntimeError("Invalid JSON response from stream API") from exc
-
-        if isinstance(parsed, dict):
-            return parsed
-        raise RuntimeError("Unexpected stream API response payload")
 
     def _trim_pending(self) -> None:
         overflow = len(self._pending) - self.config.max_pending_events
@@ -456,6 +420,111 @@ def coerce_output_stream(spec: Any) -> OutputStream | None:
         return OutputStream(consumers)
     raise TypeError(
         "stream must be a mapping, EulerViewStreamConfig, consumer, or sequence of consumers",
+    )
+
+
+def check_stream_handshake(
+    config: EulerViewStreamConfig | Mapping[str, Any],
+    *,
+    run_id: str | None = None,
+    stream_attach_token: str | None = None,
+    slurm_job_id: int | None = None,
+    datasource_id: int | None = None,
+    euler_train_dir: str | None = None,
+    run_dir: str | None = None,
+) -> dict[str, Any]:
+    if isinstance(config, Mapping):
+        resolved_config = _config_from_mapping(config)
+    elif isinstance(config, EulerViewStreamConfig):
+        resolved_config = config
+    else:
+        raise TypeError(
+            "config must be a mapping or EulerViewStreamConfig",
+        )
+
+    if resolved_config.stream_token is not None:
+        raise ValueError(
+            "stream.stream_token bypasses the session handshake; a dry-run handshake requires api_token or access_token instead",
+        )
+
+    if resolved_config.model_id is None:
+        raise ValueError("stream.model_id is required for handshake checks")
+
+    normalized_run_id = (
+        _normalize_optional_text(run_id, field_name="run_id")
+        if run_id is not None
+        else _default_stream_check_run_id()
+    )
+    if normalized_run_id is None:
+        normalized_run_id = _default_stream_check_run_id()
+    normalized_stream_attach_token = (
+        _normalize_optional_text(
+            stream_attach_token,
+            field_name="stream_attach_token",
+        )
+        if stream_attach_token is not None
+        else None
+    )
+    if (
+        normalized_stream_attach_token is not None
+        and resolved_config.stream_attach_token is not None
+        and normalized_stream_attach_token != resolved_config.stream_attach_token
+    ):
+        raise ValueError(
+            "stream_attach_token argument does not match stream.stream_attach_token",
+        )
+
+    resolved_datasource_id = (
+        _require_positive_int(
+            datasource_id,
+            field_name="datasource_id",
+            allow_none=True,
+        )
+        if datasource_id is not None
+        else resolved_config.datasource_id
+    )
+    resolved_slurm_job_id = (
+        _require_positive_int(
+            slurm_job_id,
+            field_name="slurm_job_id",
+            allow_none=True,
+        )
+        if slurm_job_id is not None
+        else None
+    )
+    resolved_euler_train_dir = (
+        _normalize_optional_text(
+            euler_train_dir,
+            field_name="euler_train_dir",
+        )
+        if euler_train_dir is not None
+        else resolved_config.euler_train_dir
+    )
+    resolved_run_dir = (
+        _normalize_optional_text(run_dir, field_name="run_dir")
+        if run_dir is not None
+        else resolved_config.run_dir
+    )
+
+    url = (
+        f"{resolved_config.base_url}/api/models/{resolved_config.model_id}"
+        f"/runs/{quote(normalized_run_id, safe='')}/stream/check"
+    )
+    payload = _build_stream_session_body(
+        run_dir=resolved_run_dir,
+        euler_train_dir=resolved_euler_train_dir,
+        stream_attach_token=(
+            normalized_stream_attach_token or resolved_config.stream_attach_token
+        ),
+        slurm_job_id=resolved_slurm_job_id,
+        datasource_id=resolved_datasource_id,
+        session_expires_in_sec=resolved_config.session_expires_in_sec,
+    )
+    return _post_json_request(
+        url,
+        payload,
+        token=resolved_config.api_token or resolved_config.access_token,
+        timeout_sec=resolved_config.timeout_sec,
     )
 
 
@@ -562,6 +631,36 @@ def _extract_session_stream_attach_token(payload: Mapping[str, Any]) -> str | No
     return normalized or None
 
 
+def _build_stream_session_body(
+    *,
+    run_dir: str | None,
+    euler_train_dir: str | None,
+    stream_attach_token: str | None,
+    slurm_job_id: int | None,
+    datasource_id: int | None,
+    session_expires_in_sec: int | None,
+) -> dict[str, Any]:
+    body: dict[str, Any] = {}
+    if run_dir is not None:
+        body["runDir"] = run_dir
+    if euler_train_dir is not None:
+        body["eulerTrainDir"] = euler_train_dir
+    if stream_attach_token is not None:
+        body["streamAttachToken"] = stream_attach_token
+    if slurm_job_id is not None:
+        body["slurmJobId"] = slurm_job_id
+    if datasource_id is not None:
+        body["datasourceId"] = datasource_id
+    if session_expires_in_sec is not None:
+        body["expiresInSec"] = session_expires_in_sec
+    return body
+
+
+def _default_stream_check_run_id() -> str:
+    timestamp = datetime.utcnow().strftime("%Y%m%dT%H%M%SZ")
+    return f"stream-check-{timestamp}"
+
+
 def _normalize_optional_text(
     value: Any,
     *,
@@ -636,6 +735,52 @@ def _extract_http_error_message(error: HTTPError) -> str:
     return f"HTTP {error.code}: {error.reason}"
 
 
+def _post_json_request(
+    url: str,
+    payload: dict[str, Any],
+    *,
+    token: str | None,
+    timeout_sec: float,
+) -> dict[str, Any]:
+    headers = {
+        "Accept": "application/json",
+        "Content-Type": "application/json",
+    }
+    if token:
+        headers["Authorization"] = f"Bearer {token}"
+
+    request = Request(
+        url,
+        data=json.dumps(payload, default=_json_default).encode("utf-8"),
+        headers=headers,
+        method="POST",
+    )
+
+    try:
+        with urlopen(request, timeout=timeout_sec) as response:
+            raw = response.read()
+    except HTTPError as exc:
+        message = _extract_http_error_message(exc)
+        raise RuntimeError(message) from exc
+    except URLError as exc:
+        reason = exc.reason if exc.reason else str(exc)
+        raise RuntimeError(str(reason)) from exc
+    except OSError as exc:
+        raise RuntimeError(str(exc)) from exc
+
+    if not raw:
+        return {}
+
+    try:
+        parsed = json.loads(raw.decode("utf-8"))
+    except json.JSONDecodeError as exc:
+        raise RuntimeError("Invalid JSON response from stream API") from exc
+
+    if isinstance(parsed, dict):
+        return parsed
+    raise RuntimeError("Unexpected stream API response payload")
+
+
 def _to_jsonable(value: Any) -> Any:
     return json.loads(json.dumps(value, default=_json_default))
 
@@ -646,5 +791,6 @@ __all__ = [
     "OutputStream",
     "OutputStreamConsumer",
     "StreamContext",
+    "check_stream_handshake",
     "coerce_output_stream",
 ]
