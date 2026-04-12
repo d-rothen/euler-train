@@ -49,6 +49,57 @@ with euler_train.init(dir="runs/exp02", config=cfg) as run:
     ...  # if an exception is raised, meta.json records status="crashed" + traceback
 ```
 
+## Euler View stream mode
+
+`euler_train` can dual-write runs to Euler View while still keeping the normal file-based run directory as the primary source of truth. Streaming is best-effort: local files are always written first, and stream events are sent alongside them when a stream consumer is configured.
+
+Pass the stream config via `stream=...` on `euler_train.init()`:
+
+```python
+import os
+import euler_train
+
+run = euler_train.init(
+    dir="runs/experiment_01",
+    config=cfg,
+    stream={
+        "base_url": os.environ["EULER_VIEW_BASE_URL"],
+        "model_id": 42,
+        "api_token": os.environ["EULER_VIEW_API_TOKEN"],
+        "stream_attach_token": os.environ.get("EULER_VIEW_STREAM_ATTACH_TOKEN"),
+    },
+)
+```
+
+What each field is for:
+
+- `base_url`: Euler View server base URL, for example `https://view.example.com`.
+- `model_id`: Euler View model that should receive this run.
+- `api_token` or `access_token`: credential used to open a stream session. This is the normal choice when the package should negotiate its own short-lived ingest token.
+- `stream_attach_token`: optional opaque launch-attachment token. When present, the producer sends it during the session handshake and Euler View attaches the stream to that launch directly. This is the preferred path for interactive or otherwise non-SLURM launches. Internally Euler View currently maps this token to `model_launches.id`, but the package treats it as an opaque token.
+- `stream_token`: optional pre-issued ingest token. If you pass this, the package skips the session handshake entirely and posts events directly to the ingest endpoint.
+- `datasource_id`: optional Euler View datasource hint for the run record.
+- `euler_train_dir` and `run_dir`: optional path overrides. These are auto-derived in normal usage.
+- `session_expires_in_sec`: optional requested session lifetime for the short-lived ingest token.
+
+How the handshake works:
+
+1. `euler_train` creates the local run directory and writes `meta.json`, `config.json`, and the other standard files as usual.
+2. When the first stream flush happens, the package requests a session from Euler View at `/api/models/{model_id}/runs/{run_id}/stream/session`.
+3. If `stream_attach_token` is configured, it is sent as `streamAttachToken` and used as the explicit launch attachment key.
+4. If no `stream_attach_token` is configured, the package falls back to the SLURM metadata already captured in `meta.json["slurm"]["job_id"]`.
+5. Euler View returns a short-lived ingest token plus the canonical `streamAttachToken`; the package caches that returned token and reuses it on later session refreshes.
+6. Subsequent events are sent to `/api/model-run-stream/ingest`.
+
+What has to be configured where:
+
+- In the training script or job wrapper: pass `stream={...}` to `euler_train.init(...)`.
+- In Euler View / the launcher: if the run should attach to a specific launch regardless of SLURM availability, provide a `stream_attach_token` to the runtime and forward it into the `stream` config.
+- Under plain SLURM launches: no extra attachment config is required as long as Euler View can uniquely match the run by `slurm.job_id`.
+- If neither `stream_attach_token` nor a unique SLURM match is available, run streaming still works, but launch-to-run linking in Euler View may remain unresolved.
+
+For new integrations, prefer `stream_attach_token`. The older `launch_id` / `launchId` config keys are still accepted as compatibility aliases, but new code should treat the attachment value as an opaque stream token rather than a launch ID.
+
 ## Directory structure
 
 Each `euler_train.init(dir=...)` call creates a timestamped subdirectory under `{dir}/runs/`:
@@ -81,7 +132,7 @@ The run ID and directory are available as `run.run_id` and `run.dir`.
 
 ## API reference
 
-### `euler_train.init(dir, config=None, meta=None, output_formats=None, output_visualization=None, run_id=None, datasets=None, run_name=None, evaluations=None, mode=None) → Run`
+### `euler_train.init(dir, config=None, meta=None, output_formats=None, output_visualization=None, run_id=None, datasets=None, run_name=None, evaluations=None, mode=None, stream=None, metric_naming=None) → Run`
 
 Creates the run directory and writes `meta.json`, `config.json`, `code_ref.json`, and `run_environment.json`. On resume (`run_id` provided), only `meta.json` and `config.json` are updated. `meta.json` also maintains an `updated_at` map with last-write timestamps for tracked artifacts.
 
@@ -97,6 +148,8 @@ Creates the run directory and writes `meta.json`, `config.json`, `code_ref.json`
 | `run_name` | `str \| None` | Optional human-readable run label stored in `meta.json`. |
 | `evaluations` | `dict[str, dict] \| None` | Optional evaluation key → entry map. See [Evaluations](#evaluations). |
 | `mode` | `str \| None` | Optional process label such as `"train"`, `"val"`, or `"eval"`. When set, lifecycle and crash details are also written under `meta.json["modes"][mode]`. |
+| `stream` | `dict \| EulerViewStreamConfig \| consumer \| sequence \| None` | Optional output stream config / consumer. A mapping with `base_url`, `model_id`, and `api_token` (or `access_token`) enables best-effort streaming to Euler View. Prefer `stream_attach_token` for explicit launch attachment; otherwise the package falls back to `meta.json["slurm"]["job_id"]` when available. |
+| `metric_naming` | `dict[str, Any] \| None` | Optional structured metric naming declaration stored in `meta.json["metric_naming"]` and included in the stream init event. |
 
 ---
 
