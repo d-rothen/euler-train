@@ -2592,3 +2592,159 @@ class TestMetricNaming:
         assert "gpu_util_pct" in stats
         assert "sys.train.gpu_util_pct" not in stats
         run.finish()
+
+
+class TestPipeline:
+    def test_pipeline_stored_in_meta_json(self, tmp_path):
+        pipeline = {"attach_id": "pipe-abc-123"}
+        run = euler_train.init(
+            dir=str(tmp_path / "r"),
+            config={"lr": 1e-3},
+            pipeline=pipeline,
+        )
+        meta = _read_json(run.dir / "meta.json")
+        assert meta["pipeline"] == pipeline
+        run.finish()
+
+    def test_pipeline_none_by_default(self, tmp_path):
+        run = euler_train.init(
+            dir=str(tmp_path / "r"),
+            config={},
+        )
+        meta = _read_json(run.dir / "meta.json")
+        assert "pipeline" not in meta
+        run.finish()
+
+    def test_pipeline_with_extra_fields(self, tmp_path):
+        pipeline = {
+            "attach_id": "pipe-xyz",
+            "stage": "training",
+            "pipeline_id": "nightly-run-42",
+        }
+        run = euler_train.init(
+            dir=str(tmp_path / "r"),
+            config={},
+            pipeline=pipeline,
+        )
+        meta = _read_json(run.dir / "meta.json")
+        assert meta["pipeline"]["attach_id"] == "pipe-xyz"
+        assert meta["pipeline"]["stage"] == "training"
+        assert meta["pipeline"]["pipeline_id"] == "nightly-run-42"
+        run.finish()
+
+    def test_pipeline_preserved_on_resume(self, tmp_path):
+        pipeline = {"attach_id": "pipe-resume-test"}
+        run1 = euler_train.init(
+            dir=str(tmp_path / "r"),
+            config={},
+            pipeline=pipeline,
+        )
+        run1.finish()
+
+        run2 = euler_train.init(
+            dir=str(run1.dir),
+        )
+        meta = _read_json(run2.dir / "meta.json")
+        assert meta["pipeline"] == pipeline
+        run2.finish()
+
+    def test_pipeline_in_stream_init_event(self, tmp_path):
+        consumer = _RecordingStreamConsumer()
+        pipeline = {"attach_id": "stream-pipe-id"}
+        run = euler_train.init(
+            dir=str(tmp_path / "r"),
+            config={},
+            stream=consumer,
+            pipeline=pipeline,
+        )
+        run.finish()
+
+        init_event = consumer.events[0]
+        assert init_event["type"] == "init"
+        assert init_event["meta"]["pipeline"] == pipeline
+
+    def test_pipeline_not_in_stream_when_absent(self, tmp_path):
+        consumer = _RecordingStreamConsumer()
+        run = euler_train.init(
+            dir=str(tmp_path / "r"),
+            config={},
+            stream=consumer,
+        )
+        run.finish()
+
+        init_event = consumer.events[0]
+        assert "pipeline" not in init_event["meta"]
+
+    def test_pipeline_validation_not_dict(self, tmp_path):
+        with pytest.raises(TypeError, match="pipeline must be a dict"):
+            euler_train.init(
+                dir=str(tmp_path / "r"),
+                config={},
+                pipeline="invalid",
+            )
+
+    def test_pipeline_validation_missing_attach_id(self, tmp_path):
+        with pytest.raises(ValueError, match="attach_id"):
+            euler_train.init(
+                dir=str(tmp_path / "r"),
+                config={},
+                pipeline={},
+            )
+
+    def test_pipeline_validation_empty_attach_id(self, tmp_path):
+        with pytest.raises(ValueError, match="attach_id"):
+            euler_train.init(
+                dir=str(tmp_path / "r"),
+                config={},
+                pipeline={"attach_id": "  "},
+            )
+
+    def test_pipeline_validation_non_string_attach_id(self, tmp_path):
+        with pytest.raises(ValueError, match="attach_id"):
+            euler_train.init(
+                dir=str(tmp_path / "r"),
+                config={},
+                pipeline={"attach_id": 42},
+            )
+
+    def test_pipeline_from_env_var(self, tmp_path, monkeypatch):
+        monkeypatch.setenv("EULER_SESSION_ID", "env-session-99")
+        run = euler_train.init(
+            dir=str(tmp_path / "r"),
+            config={},
+        )
+        meta = _read_json(run.dir / "meta.json")
+        assert meta["pipeline"] == {"attach_id": "env-session-99"}
+        run.finish()
+
+    def test_pipeline_env_var_ignored_when_explicit(self, tmp_path, monkeypatch):
+        monkeypatch.setenv("EULER_SESSION_ID", "env-session-99")
+        explicit = {"attach_id": "explicit-id", "stage": "eval"}
+        run = euler_train.init(
+            dir=str(tmp_path / "r"),
+            config={},
+            pipeline=explicit,
+        )
+        meta = _read_json(run.dir / "meta.json")
+        assert meta["pipeline"] == explicit
+        run.finish()
+
+    def test_pipeline_env_var_empty_ignored(self, tmp_path, monkeypatch):
+        monkeypatch.setenv("EULER_SESSION_ID", "  ")
+        run = euler_train.init(
+            dir=str(tmp_path / "r"),
+            config={},
+        )
+        meta = _read_json(run.dir / "meta.json")
+        assert "pipeline" not in meta
+        run.finish()
+
+    def test_pipeline_env_var_unset_ignored(self, tmp_path, monkeypatch):
+        monkeypatch.delenv("EULER_SESSION_ID", raising=False)
+        run = euler_train.init(
+            dir=str(tmp_path / "r"),
+            config={},
+        )
+        meta = _read_json(run.dir / "meta.json")
+        assert "pipeline" not in meta
+        run.finish()

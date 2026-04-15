@@ -49,6 +49,7 @@ class Run:
         mode: str | None = None,
         stream: Any = None,
         metric_naming: dict[str, Any] | None = None,
+        pipeline: dict[str, Any] | None = None,
     ) -> None:
         # ── detect run-directory shorthand ────────────────────────
         # When `dir` points to an existing run directory (contains
@@ -181,6 +182,13 @@ class Run:
         if metric_naming is not None:
             _validate_metric_naming(metric_naming)
             self._meta["metric_naming"] = metric_naming
+
+        # ── pipeline identity (optional, for automated pipelines) ──
+        if pipeline is None:
+            pipeline = _pipeline_from_env()
+        if pipeline is not None:
+            _validate_pipeline(pipeline)
+            self._meta["pipeline"] = pipeline
 
         self._mark_mode_running()
         self._flush_meta()
@@ -1079,6 +1087,25 @@ def _validate_metric_naming(value: Any) -> None:
             raise ValueError(
                 f"metric_naming namespace {ns_key!r} must be a dict"
             )
+
+
+def _pipeline_from_env() -> dict[str, Any] | None:
+    """Build a pipeline dict from ``$EULER_SESSION_ID`` when set."""
+    session_id = os.environ.get("EULER_SESSION_ID", "").strip()
+    if not session_id:
+        return None
+    return {"attach_id": session_id}
+
+
+def _validate_pipeline(value: Any) -> None:
+    """Validate the pipeline identity payload."""
+    if not isinstance(value, dict):
+        raise TypeError("pipeline must be a dict")
+    attach_id = value.get("attach_id")
+    if not isinstance(attach_id, str) or not attach_id.strip():
+        raise ValueError(
+            "pipeline must contain a non-empty 'attach_id' string"
+        )
 
 
 def _build_datasets_meta(

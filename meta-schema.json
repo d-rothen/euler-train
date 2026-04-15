@@ -162,6 +162,18 @@
       },
       "required": ["namespaces"]
     },
+    "pipeline": {
+      "type": ["object", "null"],
+      "description": "Pipeline identity for runs launched by automated pipelines. Allows downstream processes to correlate file-based artifacts back to the originating pipeline and stage.",
+      "properties": {
+        "attach_id": {
+          "type": "string",
+          "description": "Unique identifier linking this run to the pipeline invocation. Analogous to stream_attach_token for file-based mode."
+        }
+      },
+      "required": ["attach_id"],
+      "additionalProperties": true
+    },
     "updated_at": {
       "type": "object",
       "description": "Last-write timestamps keyed by artifact path.",
