@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "euler-train"
-version = "2.10.0"
+version = "2.11.0"
 description = "Lightweight file-based experiment logger for PyTorch"
 requires-python = ">=3.9"
 dependencies = ["numpy", "euler-dataset-contract"]
