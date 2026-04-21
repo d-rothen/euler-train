@@ -6,6 +6,14 @@ from typing import Any
 from . import _dataset_contract  # noqa: F401
 from .run import Run
 from .architecture import export_architecture
+from .outputs_from_batch import (
+    SAMPLE_ID_UNSAFE_PATTERN,
+    build_save_kwargs,
+    extract_sample_ids,
+    make_named_slot,
+    sanitize_sample_id,
+    save_outputs_from_batch,
+)
 from .stream import (
     EulerViewStreamConfig,
     EulerViewStreamConsumer,
@@ -20,10 +28,16 @@ __all__ = [
     "EulerViewStreamConsumer",
     "OutputStream",
     "OutputStreamConsumer",
+    "SAMPLE_ID_UNSAFE_PATTERN",
     "StreamContext",
+    "build_save_kwargs",
     "check_stream_handshake",
+    "extract_sample_ids",
     "init",
+    "make_named_slot",
     "Run",
+    "sanitize_sample_id",
+    "save_outputs_from_batch",
     "export_architecture",
 ]
 __version__ = "0.1.0"

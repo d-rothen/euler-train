@@ -471,6 +471,66 @@ class Run:
                 )
         return base
 
+    def save_outputs_from_batch(
+        self,
+        *,
+        batch: Mapping[str, Any],
+        epoch: int | None = None,
+        step: int | None = None,
+        metadata: Mapping[str, Any] | None = None,
+        dataset: Any = None,
+        id_schema: Mapping[str, Any] | None = None,
+        n: int | None = None,
+        sample_ids: list[str] | None = None,
+        include_id_schema: bool = True,
+        **output_types: Mapping[str, Any] | None,
+    ) -> Path:
+        """Convenience wrapper around :meth:`save_outputs` for collated batches.
+
+        Pulls per-sample ids from *batch* (preferring ``full_id`` over ``id``,
+        as produced by ``euler_loading.MultiModalDataset``), wraps each
+        per-slot tensor as a ``{sample_id: item}`` mapping so output files are
+        named, and — when *dataset* or an explicit *id_schema* is supplied —
+        merges the id-construction schema under ``metadata["id_schema"]`` so
+        downstream tooling can match ids back to their ds-crawler origin.
+
+        The *dataset* argument is duck-typed through ``describe_id_schema()``;
+        there is no import-time dependency on euler-loading.
+
+        Args:
+            batch: Collated batch dict with ``full_id`` or ``id`` as
+                   ``list[str]`` (PyTorch's default collate behavior).
+            epoch: Forwarded to :meth:`save_outputs`.
+            step: Forwarded to :meth:`save_outputs`.
+            metadata: Base metadata. Existing keys take precedence over the
+                      auto-injected ``id_schema``.
+            dataset: Optional dataset exposing ``describe_id_schema()``.
+            id_schema: Explicit id-schema override.
+            n: Optional batch-prefix length; defaults to the full batch.
+            sample_ids: Explicit id list overriding batch extraction.
+            include_id_schema: When *False*, skip id-schema injection.
+            **output_types: Per-output-type slot dicts (same shape as
+                            :meth:`save_outputs`).
+
+        Returns:
+            The directory that was written to.
+        """
+        from .outputs_from_batch import save_outputs_from_batch as _impl
+
+        return _impl(
+            self,
+            batch=batch,
+            epoch=epoch,
+            step=step,
+            metadata=metadata,
+            dataset=dataset,
+            id_schema=id_schema,
+            n=n,
+            sample_ids=sample_ids,
+            include_id_schema=include_id_schema,
+            **output_types,
+        )
+
     # ── checkpoints ───────────────────────────────────────────────
 
     def init_checkpoint_dir(self, base: str | Path | None = None) -> Path:
