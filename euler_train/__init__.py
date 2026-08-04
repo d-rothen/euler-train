@@ -1,6 +1,9 @@
-"""runlog — lightweight file-based experiment logging."""
+"""Lightweight, file-based experiment logging for PyTorch."""
 from __future__ import annotations
 
+from importlib.metadata import PackageNotFoundError as _PackageNotFoundError
+from importlib.metadata import version as _distribution_version
+from pathlib import Path
 from typing import Any
 
 from . import _dataset_contract  # noqa: F401
@@ -39,13 +42,19 @@ __all__ = [
     "sanitize_sample_id",
     "save_outputs_from_batch",
     "export_architecture",
+    "__version__",
 ]
-__version__ = "0.1.0"
+
+try:
+    __version__ = _distribution_version("euler-train")
+except _PackageNotFoundError:
+    # An unpacked source tree has no installed distribution metadata.
+    __version__ = "0+unknown"
 
 
 def init(
-    dir: str | None = None,
-    config=None,
+    dir: str | Path | None = None,
+    config: Any = None,
     meta: dict | None = None,
     output_formats: dict[str, str] | None = None,
     output_visualization: dict[str, Any] | None = None,
@@ -127,7 +136,7 @@ def init(
     stream:
         Optional output-stream consumer or config. Passing a mapping
         with ``base_url`` plus either ``stream_token`` or the pair
-        ``model_id`` / ``api_token`` (or legacy ``access_token``)
+        ``model_id`` / ``api_token``
         enables best-effort dual-write streaming to the Euler View
         model-run ingest API.
     metric_naming:

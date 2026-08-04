@@ -1,4 +1,28 @@
-__pycache__
-*.egg-info
-error
-netron-train
+# Python bytecode and caches
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+
+# Packaging and coverage output
+*.egg-info/
+build/
+dist/
+uv.lock
+.coverage
+coverage.xml
+htmlcov/
+
+# Virtual environments
+.venv/
+venv/
+
+# Editor and OS files
+.vscode/
+.DS_Store
+
+# Locally generated experiment artifacts
+runs/
+checkpoints/
+architecture.onnx

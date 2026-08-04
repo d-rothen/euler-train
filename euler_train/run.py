@@ -31,7 +31,7 @@ _DATASET_META_NAMESPACES = ("euler_loading", "euler_train")
 class Run:
     """A single experiment run backed by a directory on disk.
 
-    Typically created via :func:`runlog.init` rather than directly.
+    Typically created via :func:`euler_train.init` rather than directly.
     """
 
     def __init__(
@@ -329,10 +329,9 @@ class Run:
         """Return GPU utilization & memory stats, or {} if unavailable.
 
         When the run has a ``metric_naming`` declaration, keys are
-        namespaced under ``sys.train.*`` so euler-view can resolve them
-        against the declared ``sys.train`` namespace.  Legacy runs
-        (without ``metric_naming``) retain the flat key names for
-        backward compatibility.
+        namespaced under ``sys.train.*`` so Euler View can resolve them
+        against the declared ``sys.train`` namespace. Runs without a
+        declaration use the flat key names.
         """
         if self._gpu_available is None:
             try:

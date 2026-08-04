@@ -483,7 +483,7 @@ class TestDatasetMetadata:
                 "properties": {
                     "euler_train": {
                         "used_as": "target",
-                        "slot": "legacy.target.rgb",
+                        "slot": "fallback.target.rgb",
                     },
                     "euler_loading": {
                         "used_as": "input",
@@ -1839,6 +1839,33 @@ class TestLogSavedCheckpoint:
 # ═══════════════════════════════════════════════════════════════════════════
 
 class TestStreaming:
+    @pytest.mark.parametrize(
+        ("field", "replacement"),
+        [
+            ("access_token", "api_token"),
+            ("accessToken", "api_token"),
+            ("launch_id", "stream_attach_token"),
+            ("launchId", "stream_attach_token"),
+        ],
+    )
+    def test_removed_stream_config_aliases_are_rejected(
+        self,
+        field,
+        replacement,
+    ):
+        with pytest.raises(
+            ValueError,
+            match=rf"{field!r}.*{replacement!r}",
+        ):
+            stream_mod.coerce_output_stream(
+                {
+                    "base_url": "https://sync.example",
+                    "model_id": 42,
+                    "api_token": "user-token",
+                    field: "old-value",
+                },
+            )
+
     def test_run_emits_expected_stream_events(self, tmp_path):
         consumer = _RecordingStreamConsumer()
 
@@ -2111,7 +2138,7 @@ class TestStreaming:
             stream={
                 "base_url": "https://sync.example",
                 "model_id": 42,
-                "access_token": "user-token",
+                "api_token": "user-token",
                 "batch_size": 1,
             },
         )
@@ -2149,7 +2176,6 @@ class TestStreaming:
                             "modelId": 42,
                             "runId": "dry-run-1",
                             "streamAttachToken": "attach-123",
-                            "launchId": "launch-abc",
                             "datasourceId": 7,
                             "eulerTrainDir": "/outputs",
                             "runDir": "/outputs/dry-run-1",
@@ -2206,7 +2232,6 @@ class TestStreaming:
                         "modelId": 42,
                         "runId": "dry-run-2",
                         "streamAttachToken": None,
-                        "launchId": None,
                         "datasourceId": None,
                         "eulerTrainDir": None,
                         "runDir": None,

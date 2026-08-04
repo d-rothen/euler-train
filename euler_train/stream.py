@@ -53,10 +53,8 @@ class EulerViewStreamConfig:
     base_url: str
     model_id: int | None = None
     api_token: str | None = None
-    access_token: str | None = None
     stream_token: str | None = None
     stream_attach_token: str | None = None
-    launch_id: str | None = None
     datasource_id: int | None = None
     euler_train_dir: str | None = None
     run_dir: str | None = None
@@ -73,10 +71,6 @@ class EulerViewStreamConfig:
         if not self.base_url:
             raise ValueError("stream.base_url is required")
 
-        self.access_token = _normalize_optional_text(
-            self.access_token,
-            field_name="stream.access_token",
-        )
         self.api_token = _normalize_optional_text(
             self.api_token,
             field_name="stream.api_token",
@@ -89,20 +83,6 @@ class EulerViewStreamConfig:
             self.stream_attach_token,
             field_name="stream.stream_attach_token",
         )
-        self.launch_id = _normalize_optional_text(
-            self.launch_id,
-            field_name="stream.launch_id",
-        )
-        if (
-            self.stream_attach_token is not None
-            and self.launch_id is not None
-            and self.stream_attach_token != self.launch_id
-        ):
-            raise ValueError(
-                "stream.stream_attach_token and stream.launch_id must match when both are provided",
-            )
-        if self.stream_attach_token is None:
-            self.stream_attach_token = self.launch_id
         self.euler_train_dir = _normalize_optional_text(
             self.euler_train_dir,
             field_name="stream.euler_train_dir",
@@ -149,9 +129,9 @@ class EulerViewStreamConfig:
                 raise ValueError(
                     "stream.model_id is required when neither stream.stream_token nor stream.stream_attach_token is provided",
                 )
-            if self.api_token is None and self.access_token is None:
+            if self.api_token is None:
                 raise ValueError(
-                    "stream.api_token or stream.access_token is required when stream.stream_token is not provided",
+                    "stream.api_token is required when stream.stream_token is not provided",
                 )
 
 
@@ -330,7 +310,7 @@ class EulerViewStreamConsumer:
             payload = self._post_json(
                 session_url,
                 session_body,
-                token=self.config.api_token or self.config.access_token,
+                token=self.config.api_token,
             )
         except Exception as exc:
             self._schedule_retry()
@@ -442,7 +422,7 @@ def check_stream_handshake(
 
     if resolved_config.stream_token is not None:
         raise ValueError(
-            "stream.stream_token bypasses the session handshake; a dry-run handshake requires api_token or access_token instead",
+            "stream.stream_token bypasses the session handshake; a dry-run handshake requires api_token instead",
         )
 
     normalized_run_id = (
@@ -522,7 +502,7 @@ def check_stream_handshake(
     return _post_json_request(
         url,
         payload,
-        token=resolved_config.api_token or resolved_config.access_token,
+        token=resolved_config.api_token,
         timeout_sec=resolved_config.timeout_sec,
     )
 
@@ -535,6 +515,18 @@ def _looks_like_consumer(value: Any) -> bool:
 
 
 def _config_from_mapping(raw: Mapping[str, Any]) -> EulerViewStreamConfig:
+    removed_fields = {
+        "access_token": "api_token",
+        "accessToken": "api_token",
+        "launch_id": "stream_attach_token",
+        "launchId": "stream_attach_token",
+    }
+    for field, replacement in removed_fields.items():
+        if field in raw:
+            raise ValueError(
+                f"Unsupported stream config field {field!r}; use {replacement!r}",
+            )
+
     provider = _mapping_get(raw, "provider", "kind", "type")
     if provider is not None:
         normalized = str(provider).strip().lower().replace("-", "_")
@@ -546,7 +538,6 @@ def _config_from_mapping(raw: Mapping[str, Any]) -> EulerViewStreamConfig:
     return EulerViewStreamConfig(
         base_url=_mapping_get(raw, "base_url", "baseUrl"),
         model_id=_mapping_get(raw, "model_id", "modelId"),
-        access_token=_mapping_get(raw, "access_token", "accessToken"),
         api_token=_mapping_get(raw, "api_token", "apiToken"),
         stream_token=_mapping_get(raw, "stream_token", "streamToken"),
         stream_attach_token=_mapping_get(
@@ -554,7 +545,6 @@ def _config_from_mapping(raw: Mapping[str, Any]) -> EulerViewStreamConfig:
             "stream_attach_token",
             "streamAttachToken",
         ),
-        launch_id=_mapping_get(raw, "launch_id", "launchId"),
         datasource_id=_mapping_get(raw, "datasource_id", "datasourceId"),
         euler_train_dir=_mapping_get(raw, "euler_train_dir", "eulerTrainDir"),
         run_dir=_mapping_get(raw, "run_dir", "runDir"),
@@ -622,10 +612,7 @@ def _extract_session_stream_attach_token(payload: Mapping[str, Any]) -> str | No
         return None
     stream_attach_token = run.get("streamAttachToken")
     if not isinstance(stream_attach_token, str):
-        legacy_launch_id = run.get("launchId")
-        if not isinstance(legacy_launch_id, str):
-            return None
-        stream_attach_token = legacy_launch_id
+        return None
     normalized = stream_attach_token.strip()
     return normalized or None
 

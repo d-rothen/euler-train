@@ -256,14 +256,13 @@ def _save_png(
         arr = arr.astype(np.uint8)
 
     if arr.ndim == 2:
-        Image.fromarray(arr, mode="L").save(str(path))
+        Image.fromarray(arr).save(str(path))
     elif arr.ndim == 3:
         c = arr.shape[2]
-        mode = {1: "L", 3: "RGB", 4: "RGBA"}.get(c)
-        if mode is None:
+        if c not in (1, 3, 4):
             raise ValueError(f"Cannot save array with {c} channels as PNG")
         plane = arr[:, :, 0] if c == 1 else arr
-        Image.fromarray(plane, mode=mode).save(str(path))
+        Image.fromarray(plane).save(str(path))
     else:
         raise ValueError(f"Cannot save {arr.ndim}D array as PNG")
 

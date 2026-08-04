@@ -1,23 +1,64 @@
 [build-system]
-requires = ["setuptools>=64"]
+requires = ["setuptools>=77"]
 build-backend = "setuptools.build_meta"
 
 [project]
 name = "euler-train"
 version = "2.11.0"
 description = "Lightweight file-based experiment logger for PyTorch"
+readme = "README.md"
 requires-python = ">=3.9"
-dependencies = ["numpy", "euler-dataset-contract"]
+license = "MIT"
+license-files = ["LICENSE"]
+authors = [
+    { name = "Daniel Rothenpieler", email = "rothenpielerdaniel@gmail.com" },
+]
+keywords = [
+    "pytorch",
+    "experiment-tracking",
+    "machine-learning",
+    "logging",
+    "reproducibility",
+    "slurm",
+]
+classifiers = [
+    "Development Status :: 4 - Beta",
+    "Intended Audience :: Developers",
+    "Intended Audience :: Science/Research",
+    "Operating System :: OS Independent",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.9",
+    "Programming Language :: Python :: 3.10",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Programming Language :: Python :: 3.13",
+    "Topic :: Scientific/Engineering :: Artificial Intelligence",
+]
+dependencies = [
+    "numpy",
+    "euler-dataset-contract>=0.2.1",
+]
 
 [project.optional-dependencies]
 images = ["Pillow"]
 gpu = ["nvidia-ml-py"]
-architecture = ["onnx", "onnxruntime", "onnxsim"]
+architecture = ["torch", "onnx", "onnxruntime", "onnxsim"]
 naming = ["euler-metric-naming"]
-dev = ["pytest", "Pillow", "torch", "nvidia-ml-py", "onnx", "onnxruntime", "onnxsim"]
+datasets = ["ds-crawler>=2.3.0"]
+yaml = ["PyYAML"]
+dev = ["pytest", "Pillow", "torch", "PyYAML", "ds-crawler>=2.3.0"]
 
 [project.scripts]
 "euler-train.stream.check" = "euler_train.stream_check_cli:main"
+
+[project.urls]
+Homepage = "https://github.com/d-rothen/euler-train"
+Repository = "https://github.com/d-rothen/euler-train"
+Issues = "https://github.com/d-rothen/euler-train/issues"
+Documentation = "https://github.com/d-rothen/euler-train/tree/main/docs"
+
+[tool.setuptools.packages.find]
+include = ["euler_train*"]
 
 [tool.pytest.ini_options]
 pythonpath = ["."]
