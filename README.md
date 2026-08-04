@@ -1,3 +1,9 @@
+<!-- euler header — shared across the euler packages.
+     Per package, change only: the <h1>, the tagline, and the badge URLs. -->
+<p align="center">
+  <img src="https://files.chronodle.com/icons/euler.svg" alt="euler" width="96" height="96">
+</p>
+
 <h1 align="center">euler-train</h1>
 
 <p align="center">
