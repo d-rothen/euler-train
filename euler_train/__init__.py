@@ -66,6 +66,7 @@ def init(
     stream: Any = None,
     metric_naming: dict[str, Any] | None = None,
     pipeline: dict[str, Any] | None = None,
+    modality_roles: dict[str, Any] | None = None,
 ) -> Run:
     """Create a new run — or resume an existing one — and return the handle.
 
@@ -152,6 +153,20 @@ def init(
         file-based artifacts back to the originating pipeline stage.
         Stored in ``meta.json`` under ``pipeline``.  Additional keys
         (e.g. ``stage``, ``pipeline_id``) are preserved as-is.
+    modality_roles:
+        Optional experiment roles of the logged modalities, keyed by
+        modality name: ``{"hazy": "input", "depth": "target"}``.  A value
+        is a ``used_as`` string (``condition``, ``input``, ``output``,
+        ``target``) or a mapping with ``used_as``, ``slot``, ``task`` (and
+        ``hierarchy_scope``/``applies_to`` for conditions).  A key matches
+        the full modality name or the part after its last ``.``, so
+        ``"depth"`` also covers ``"urbansyn.depth"`` from a mixture.
+        Roles are an experiment property, so datasets need not carry them.
+        These fill only fields the dataset's ``describe_for_runlog()``
+        leaves empty (euler-loading resolves ``Modality(used_as=...)``, the
+        head's ``addons.euler_train``/``euler_loading`` roles and its own
+        name hints first) and win over euler-train's name heuristics.
+        Applies to *datasets*, *evaluations* and :meth:`Run.add_evaluation`.
     """
     return Run(
         dir=dir, config=config, meta=meta,
@@ -163,4 +178,5 @@ def init(
         stream=stream,
         metric_naming=metric_naming,
         pipeline=pipeline,
+        modality_roles=modality_roles,
     )

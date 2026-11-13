@@ -14,7 +14,7 @@ import traceback
 import warnings
 from collections.abc import Mapping
 from pathlib import Path
-from typing import Any
+from typing import Any, NamedTuple
 
 from .serialization import append_jsonl, normalize_config, read_json, write_json
 from .outputs import save_output_tree
@@ -22,6 +22,7 @@ from .slurm import get_slurm_info
 from .git_info import get_code_ref
 from .environment import get_run_environment
 from .stream import OutputStream, StreamContext, coerce_output_stream
+from ._dataset_contract import normalize_modality_roles
 
 log = logging.getLogger("euler_train")
 
@@ -50,7 +51,21 @@ class Run:
         stream: Any = None,
         metric_naming: dict[str, Any] | None = None,
         pipeline: dict[str, Any] | None = None,
+        modality_roles: Mapping[str, Any] | None = None,
     ) -> None:
+        # Validate the trainer's roles and describe the datasets before
+        # anything touches the disk: a dataset that cannot be logged must not
+        # leave a half-created run directory behind.
+        self._modality_roles = normalize_modality_roles(modality_roles)
+        described_datasets = (
+            _build_datasets_meta(
+                datasets=datasets,
+                existing=None,
+                modality_roles=self._modality_roles,
+            )
+            if datasets is not None
+            else None
+        )
         # ── detect run-directory shorthand ────────────────────────
         # When `dir` points to an existing run directory (contains
         # meta.json) and no explicit `run_id` is provided, treat it
@@ -165,17 +180,19 @@ class Run:
             self.checkpoint_dir = Path(checkpoint_dir)
 
         # ── datasets (optional euler_loading integration) ────────
-        if datasets is not None:
-            self._meta["datasets"] = _build_datasets_meta(
-                datasets=datasets,
-                existing=self._meta.get("datasets"),
-            )
+        if described_datasets is not None:
+            existing_datasets = self._meta.get("datasets")
+            self._meta["datasets"] = {
+                **(existing_datasets if isinstance(existing_datasets, dict) else {}),
+                **described_datasets,
+            }
 
         # ── evaluations (optional, typically on resume) ───────
         if evaluations is not None:
             self._meta["evaluations"] = _build_evaluations_meta(
                 evaluations=evaluations,
                 existing=self._meta.get("evaluations"),
+                modality_roles=self._modality_roles,
             )
 
         # ── metric naming (optional structured naming declaration) ──
@@ -233,6 +250,7 @@ class Run:
         self._meta["evaluations"] = _build_evaluations_meta(
             evaluations={key: entry},
             existing=self._meta.get("evaluations"),
+            modality_roles=self._modality_roles,
         )
         self._flush_meta()
         evaluations = self._meta.get("evaluations", {})
@@ -1170,12 +1188,25 @@ def _validate_pipeline(value: Any) -> None:
 def _build_datasets_meta(
     datasets: Mapping[str, Any],
     existing: Any,
+    *,
+    modality_roles: Mapping[str, Mapping[str, Any]] | None = None,
 ) -> dict[str, Any]:
     merged: dict[str, Any] = dict(existing) if isinstance(existing, dict) else {}
+    modality_roles = normalize_modality_roles(modality_roles)  # idempotent
 
+    # Describe every split before raising, so one error lists every modality
+    # that lacks a role instead of one per training attempt.
+    missing: list[_MissingField] = []
     for split, dataset in datasets.items():
         split_name = str(split)
-        merged[split_name] = _describe_dataset(dataset)
+        try:
+            merged[split_name] = _describe_dataset(
+                dataset, modality_roles=modality_roles,
+            )
+        except MissingModalityFieldsError as exc:
+            missing.extend(item._replace(split=split_name) for item in exc.missing)
+    if missing:
+        raise MissingModalityFieldsError(missing)
 
     return merged
 
@@ -1183,11 +1214,14 @@ def _build_datasets_meta(
 def _build_evaluations_meta(
     evaluations: Mapping[str, Mapping[str, Any]],
     existing: Any,
+    *,
+    modality_roles: Mapping[str, Mapping[str, Any]] | None = None,
 ) -> dict[str, Any]:
     merged: dict[str, Any] = dict(existing) if isinstance(existing, dict) else {}
     for eval_key, eval_entry in evaluations.items():
         merged[str(eval_key)] = _build_single_evaluation(
             eval_entry, merged.get(str(eval_key)),
+            modality_roles=modality_roles,
         )
     return merged
 
@@ -1195,6 +1229,8 @@ def _build_evaluations_meta(
 def _build_single_evaluation(
     entry: Mapping[str, Any],
     existing: Any,
+    *,
+    modality_roles: Mapping[str, Mapping[str, Any]] | None = None,
 ) -> dict[str, Any]:
     result: dict[str, Any] = dict(existing) if isinstance(existing, dict) else {}
 
@@ -1203,6 +1239,7 @@ def _build_single_evaluation(
         result["datasets"] = _build_datasets_meta(
             datasets=raw_datasets,
             existing=result.get("datasets"),
+            modality_roles=modality_roles,
         )
 
     for field in ("name", "status", "checkpoint", "metadata"):
@@ -1215,16 +1252,115 @@ def _build_single_evaluation(
 _REQUIRED_MODALITY_FIELDS = ("used_as", "modality_type", "slot")
 
 
-def _validate_modality_entries(entries: dict[str, dict[str, Any]]) -> None:
+class _MissingField(NamedTuple):
+    split: str | None
+    name: str
+    path: str
+    metadata_scope: str | None
+    fields: tuple[str, ...]
+
+
+class MissingModalityFieldsError(ValueError):
+    """Logged modalities lack ``used_as``/``modality_type``/``slot``.
+
+    Lists every affected modality of every split at once.
+    """
+
+    def __init__(self, missing: list[_MissingField]) -> None:
+        self.missing = list(missing)
+        super().__init__(_format_missing_fields(self.missing))
+
+
+def _root_missing_fields(entry: Mapping[str, Any]) -> tuple[str, ...]:
+    """Fields to report: ``slot`` is derived from the other two."""
+    roots = tuple(f for f in ("used_as", "modality_type") if not entry.get(f))
+    if roots:
+        return roots
+    return ("slot",) if not entry.get("slot") else ()
+
+
+def _collect_missing_fields(
+    entries: dict[str, dict[str, Any]],
+) -> list[_MissingField]:
+    missing: list[_MissingField] = []
     for name, entry in entries.items():
-        for field in _REQUIRED_MODALITY_FIELDS:
-            if not entry.get(field):
-                path = entry.get("path", "<unknown>")
-                raise ValueError(
-                    f"Modality {name!r} (path: {path}): missing required field "
-                    f"{field!r}. Provide it via describe_for_runlog() or "
-                    f"set 'properties.euler_train.{field}' explicitly."
+        fields = _root_missing_fields(entry)
+        if fields:
+            missing.append(
+                _MissingField(
+                    split=None,
+                    name=name,
+                    path=str(entry.get("path", "<unknown>")),
+                    metadata_scope=_as_non_empty_str(entry.get("metadata_scope")),
+                    fields=fields,
                 )
+            )
+    return missing
+
+
+def _format_missing_fields(missing: list[_MissingField]) -> str:
+    count = len(missing)
+    lines = [
+        f"euler-train cannot log {count} modalit{'y' if count == 1 else 'ies'}: "
+        "each logged modality needs 'used_as', 'modality_type' and 'slot'."
+    ]
+    role_keys: list[str] = []
+    for item in missing:
+        where = f"path: {item.path}"
+        if item.metadata_scope:
+            where += f", scope: {item.metadata_scope}"
+        split = f"{item.split}: " if item.split else ""
+        noun = "field" if len(item.fields) == 1 else "fields"
+        fields = ", ".join(repr(f) for f in item.fields)
+        lines.append(
+            f"  - {split}Modality {item.name!r} ({where}): "
+            f"missing required {noun} {fields}"
+        )
+        if "used_as" in item.fields or item.fields == ("slot",):
+            key = _role_key_hint(item.name)
+            if key not in role_keys:
+                role_keys.append(key)
+    if role_keys:
+        example = ", ".join(f'"{key}": "<role>"' for key in role_keys)
+        lines += [
+            "No role was found: neither the euler-loading Modality (used_as=...), "
+            "the dataset head (addons.euler_train / addons.euler_loading) nor "
+            "the modality name provides one. Declare the role each modality "
+            "plays in this experiment, once per run:",
+            f"    euler_train.init(..., modality_roles={{{example}}})",
+            "<role> is one of condition, input, output, target, or a mapping "
+            "with used_as, slot and task. A key matches the full modality name "
+            "or the part after its last '.' ('depth' matches 'urbansyn.depth'). "
+            "Roles from the Modality or the head take precedence.",
+        ]
+    if any("modality_type" in item.fields for item in missing):
+        lines.append(
+            "'modality_type' comes from Modality(modality_type=...) or the "
+            "dataset head's modality.key."
+        )
+    return "\n".join(lines)
+
+
+def _role_key_hint(name: str) -> str:
+    return name.rsplit(".", 1)[-1]
+
+
+def _role_layers(
+    name: str,
+    modality_roles: Mapping[str, Mapping[str, Any]] | None,
+) -> list[Mapping[str, Any]]:
+    """Trainer-declared roles for *name*: exact name first, then its leaf.
+
+    ``MixedDataset``-style wrappers log modalities as ``<source>.<modality>``,
+    so ``{"depth": "target"}`` covers ``urbansyn.depth`` and ``rds.depth``
+    alike, while ``{"urbansyn.depth": ...}`` targets one source.
+    """
+    if not modality_roles:
+        return []
+    role = modality_roles.get(name)
+    if role is None and "." in name:
+        role = modality_roles.get(name.rsplit(".", 1)[-1])
+    return [role] if role else []
 
 
 def _enrich_contract_entries(
@@ -1232,8 +1368,14 @@ def _enrich_contract_entries(
     ds_crawler_cache: dict[str, dict[str, Any]],
     *,
     is_hierarchical: bool,
+    modality_roles: Mapping[str, Mapping[str, Any]] | None = None,
 ) -> None:
-    """Fill missing required fields in contract entries from ds_crawler."""
+    """Fill missing required fields of contract entries.
+
+    Values already in an entry are never replaced. Gaps are filled from the
+    ds-crawler head properties, then from the trainer's *modality_roles*,
+    then from naming heuristics.
+    """
     for name, entry in entries.items():
         missing = [f for f in _REQUIRED_MODALITY_FIELDS if not entry.get(f)]
         if not missing:
@@ -1245,6 +1387,7 @@ def _enrich_contract_entries(
 
         descriptor = _get_ds_crawler_descriptor(path, ds_crawler_cache)
         properties = _properties_with_namespaces(descriptor.get("properties"))
+        properties += _role_layers(name, modality_roles)
 
         if "used_as" in missing:
             used_as, _ = _infer_used_as(
@@ -1279,20 +1422,30 @@ def _enrich_contract_entries(
                     entry["slot"] = slot
 
 
-def _describe_dataset(dataset: Any) -> dict[str, Any]:
+def _describe_dataset(
+    dataset: Any,
+    *,
+    modality_roles: Mapping[str, Mapping[str, Any]] | None = None,
+) -> dict[str, Any]:
     described = _describe_dataset_via_contract(dataset)
     if described is not None:
         ds_crawler_cache: dict[str, dict[str, Any]] = {}
         _enrich_contract_entries(
             described.get("modalities", {}), ds_crawler_cache,
             is_hierarchical=False,
+            modality_roles=modality_roles,
         )
         _enrich_contract_entries(
             described.get("hierarchical_modalities", {}), ds_crawler_cache,
             is_hierarchical=True,
+            modality_roles=modality_roles,
         )
-        _validate_modality_entries(described.get("modalities", {}))
-        _validate_modality_entries(described.get("hierarchical_modalities", {}))
+        missing = _collect_missing_fields(described.get("modalities", {}))
+        missing += _collect_missing_fields(
+            described.get("hierarchical_modalities", {})
+        )
+        if missing:
+            raise MissingModalityFieldsError(missing)
         return described
 
     modality_paths = _extract_modality_paths(
@@ -1320,6 +1473,7 @@ def _describe_dataset(dataset: Any) -> dict[str, Any]:
             is_hierarchical=False,
             regular_modality_names=regular_names,
             hierarchy_levels=None,
+            modality_roles=modality_roles,
         )
 
     hierarchical_modalities: dict[str, dict[str, Any]] = {}
@@ -1332,6 +1486,7 @@ def _describe_dataset(dataset: Any) -> dict[str, Any]:
             is_hierarchical=True,
             regular_modality_names=regular_names,
             hierarchy_levels=hierarchical_levels.get(name),
+            modality_roles=modality_roles,
         )
 
     return {
@@ -1581,8 +1736,10 @@ def _build_modality_entry(
     is_hierarchical: bool,
     regular_modality_names: list[str],
     hierarchy_levels: list[tuple[str, ...]] | None,
+    modality_roles: Mapping[str, Mapping[str, Any]] | None = None,
 ) -> dict[str, Any]:
     properties = _properties_with_namespaces(descriptor.get("properties"))
+    properties += _role_layers(name, modality_roles)
     used_as, used_as_explicit = _infer_used_as(
         name=name,
         properties=properties,
@@ -1598,7 +1755,9 @@ def _build_modality_entry(
     if used_as is None:
         raise ValueError(
             f"Modality {name!r} (path: {path}): could not determine 'used_as'. "
-            f"Set 'properties.euler_train.used_as' explicitly."
+            f"Pass euler_train.init(modality_roles={{{_role_key_hint(name)!r}: "
+            f"'<condition|input|output|target>'}}) or set "
+            f"'properties.euler_train.used_as' explicitly."
         )
     if modality_type is None:
         raise ValueError(
@@ -1610,7 +1769,8 @@ def _build_modality_entry(
         warnings.warn(
             f"Modality {name!r} (path: {path}): 'used_as' was inferred as "
             f"{used_as!r} from the modality name. "
-            f"Set 'properties.euler_train.used_as' explicitly to suppress this warning.",
+            f"Pass modality_roles to euler_train.init or set "
+            f"'properties.euler_train.used_as' explicitly to suppress this warning.",
             stacklevel=2,
         )
     if not modality_type_explicit:

@@ -39,6 +39,7 @@ euler_train.init(
 | `stream` | Optional stream config, consumer or sequence of consumers. See [Streaming](streaming.md). |
 | `metric_naming` | Structured naming declaration stored with the run and included in stream initialization. |
 | `pipeline` | Pipeline identity with a required non-empty `attach_id`. If omitted, `$EULER_SESSION_ID` is used when set. |
+| `modality_roles` | Experiment role of each logged modality, e.g. `{"hazy": "input", "depth": "target"}`. Fills `used_as`/`slot` that the dataset does not declare. See [Dataset roles](#dataset-roles). |
 
 When `dir` is omitted, the project name comes from the Git root (or current
 directory) and the base directory is resolved in this order:
@@ -200,6 +201,42 @@ hierarchical entries can also record scope and applicability.
 
 This integration is duck-typed. Importing euler-train does not require
 euler-loading itself.
+
+#### Dataset roles
+
+Every logged modality needs `used_as` (`condition`, `input`, `output` or
+`target`), `modality_type` and `slot`. Roles belong to the experiment, not to
+the dataset: the same depth archive is a target for one model and a condition
+for another, and datasets prepared by euler-known-datasets carry no roles.
+Declare them once per run:
+
+```python
+run = euler_train.init(
+    config=config,
+    datasets={"train": train_dataset, "val": val_dataset},
+    modality_roles={
+        "hazy": "input",
+        "clear": "target",
+        "depth": "target",
+        "intrinsics": "condition",
+        "urbansyn.depth": {"used_as": "target", "task": "depth"},
+    },
+)
+```
+
+A key matches the full modality name, then the part after its last `.`, so
+`"depth"` covers `urbansyn.depth` and `rds.depth` from a mixture. A value is a
+`used_as` string or a mapping with `used_as`, `slot` and `task` (plus
+`hierarchy_scope` and `applies_to` for conditions); the slot defaults to
+`[task.]used_as.modality_type`.
+
+Roles fill gaps only. A value the dataset's `describe_for_runlog()` already
+reports (euler-loading `Modality(used_as=...)`, a head's
+`addons.euler_train`/`addons.euler_loading` roles, or euler-loading's name
+hints such as `hazy` → `input`) is kept; `modality_roles` wins over
+euler-train's own name heuristics. When a role is still missing, `init` raises
+one `MissingModalityFieldsError` (a `ValueError`) that lists every affected
+modality of every split, before the run directory is created.
 
 ### Evaluation records
 
