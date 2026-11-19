@@ -37,6 +37,7 @@ classifiers = [
 dependencies = [
     "numpy",
     "euler-dataset-contract>=0.2.1",
+    "euler-connector>=0.1",
 ]
 
 [project.optional-dependencies]

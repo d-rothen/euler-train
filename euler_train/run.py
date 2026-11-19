@@ -22,6 +22,7 @@ from .slurm import get_slurm_info
 from .git_info import get_code_ref
 from .environment import get_run_environment
 from .stream import OutputStream, StreamContext, coerce_output_stream
+from euler_connector import progress as euler_progress
 from ._dataset_contract import normalize_modality_roles
 
 log = logging.getLogger("euler_train")
@@ -105,6 +106,13 @@ class Run:
         self._pending_updated_at: dict[str, dict[str, Any]] = {}
         self._stream: OutputStream | None = coerce_output_stream(stream)
         self._stream_event_counters: dict[str, int] = {}
+        # euler-view progress of training (epoch e of E, steps within it), started
+        # by the first training record; euler-connector carries it.
+        self._progress: euler_progress.Progress | None = None
+        self._progress_totals: dict[str, int | None] = {"epochs": None, "steps_per_epoch": None}
+        self._progress_first_epoch = 0
+        self._progress_epoch: int | None = None
+        self._progress_epoch_first_step = 0
 
         # ── config ────────────────────────────────────────────────
         if resuming:
@@ -339,6 +347,44 @@ class Run:
                 "split": split,
                 "records": [copy.deepcopy(record)],
             },
+        )
+        if mode == "train":
+            self._report_progress(step=step, epoch=epoch)
+
+    # ── progress ──────────────────────────────────────────────────
+
+    def set_progress(
+        self,
+        *,
+        total_epochs: int | None = None,
+        steps_per_epoch: int | None = None,
+        first_epoch: int = 0,
+    ) -> None:
+        """Totals for euler-view's progress of this run (epoch e of E, step s of S).
+
+        Without a call, the epochs come from the config (``epochs``,
+        ``num_epochs``, ``max_epochs``, ``n_epochs``, ``trainer.max_epochs``,
+        ``training.num_epochs``) and the steps per epoch stay unknown.
+        *first_epoch* is the ``epoch`` value ``log()`` gets in the first epoch.
+        """
+        self._progress_totals = {"epochs": total_epochs, "steps_per_epoch": steps_per_epoch}
+        self._progress_first_epoch = first_epoch
+
+    def _report_progress(self, *, step: int, epoch: int) -> None:
+        if self._progress is None:
+            self._progress = euler_progress.start("train")
+        if not self._progress.enabled:
+            return
+        if self._progress_epoch != epoch:
+            self._progress_epoch = epoch
+            self._progress_epoch_first_step = step
+        total_epochs = self._progress_totals["epochs"] or _planned_epochs(self.config)
+        self._progress.set_epoch(epoch - self._progress_first_epoch + 1, total_epochs)
+        self._progress.update(
+            step - self._progress_epoch_first_step + 1,
+            self._progress_totals["steps_per_epoch"],
+            scope="epoch",
+            unit="step",
         )
 
     # ── GPU stats ─────────────────────────────────────────────────
@@ -727,6 +773,8 @@ class Run:
             return
         self._finished = True
         self._teardown_hooks()
+        if self._progress is not None:
+            self._progress.close(done=status == "completed")
         end = time.time()
         duration = round(end - self._start_time, 3)
         self._meta.update(
@@ -1134,6 +1182,19 @@ def _artifact_mtime(path: Path) -> float | None:
         return path.stat().st_mtime
     except OSError:
         return None
+
+
+def _planned_epochs(config: Mapping[str, Any] | None) -> int | None:
+    """Planned epochs from a trainer config (the keys euler-view reads, plus dehaze-baseline's)."""
+    if not isinstance(config, Mapping):
+        return None
+    nested = [config.get(key) for key in ("trainer", "training")]
+    candidates = [config.get(key) for key in ("epochs", "num_epochs", "max_epochs", "n_epochs")]
+    candidates += [section.get(key) for section in nested if isinstance(section, Mapping) for key in ("max_epochs", "num_epochs")]
+    for value in candidates:
+        if isinstance(value, int) and not isinstance(value, bool) and value > 0:
+            return value
+    return None
 
 
 def _normalize_mode(mode: str | None) -> str | None:
