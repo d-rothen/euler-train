@@ -111,7 +111,8 @@ re-raising or forwarding the event.
 | **Append-only metrics** | Training and validation records are JSONL, with step, epoch, wall time and optional GPU utilization added automatically. |
 | **Structured outputs** | Predictions, targets, inputs and auxiliary arrays are saved as PNG/NPY/NPZ with a manifest for every snapshot. |
 | **Dataset-aware IDs** | Batches from [euler-loading](https://github.com/d-rothen/euler-loading) retain stable sample IDs and dataset provenance. |
-| **Checkpoint bookkeeping** | Save checkpoints directly or register files written by another framework; paths and best-checkpoint state land in `meta.json`. |
+| **Checkpoint bookkeeping** | Save checkpoints directly or register files written by another framework; paths, best-checkpoint state and how it was selected land in `meta.json`. |
+| **Comparable validation** | With euler-metric-naming's training naming 2.0, every logged key is defined (direction, unit) and checked; validation sets record in-training validation as evaluations a viewer can judge against the final evaluation. See [API](docs/api.md#training-naming-20) and the [cross-repo plan](https://github.com/d-rothen/euler-metric-naming/blob/main/docs/training-alignment-plan.md). |
 | **Resume and evaluation** | Reopen a run by ID or path, preserve its history, and attach named evaluation records and per-mode lifecycle state. |
 | **Optional live view** | Best-effort event consumers can mirror a run to Euler View without weakening the on-disk source of truth. |
 

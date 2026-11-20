@@ -45,6 +45,16 @@ The first forced flush performs this sequence:
 The init, checkpoint, output snapshot and finish events force a flush. Metric
 events flush when the batch or time threshold is reached.
 
+### Capabilities
+
+The session response may list `capabilities`. Validation-set events
+(`validation_set` with the set document, `validation` with a pass record) are
+sent only to a session that lists `validation_sets/1`; an older ingest would
+reject an unknown event type together with its whole batch. Without the
+capability the events are left out of the stream and stay in the run
+directory (`validation/<key>/`), from where a filesystem sync reads them.
+Custom consumers (below) receive every event.
+
 ## Attachment choices
 
 ### Explicit attachment token

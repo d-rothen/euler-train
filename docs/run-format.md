@@ -16,6 +16,10 @@ need to import euler-train to inspect a completed run.
         ├── run_environment.json
         ├── train.jsonl                 # after the first training log
         ├── val.jsonl                   # after the first validation log
+        ├── validation/                 # optional: validation sets
+        │   └── <key>/
+        │       ├── set.json            # the set document, written once
+        │       └── passes.jsonl        # one record per validation pass
         ├── architecture.onnx            # optional
         ├── checkpoints/                 # optional; may be external instead
         │   └── epoch_<N>.pt
@@ -55,7 +59,9 @@ artifact metadata changes.
 | `checkpoints` | Checkpoint records in registration order. |
 | `checkpoint_dir` | Optional external checkpoint directory. |
 | `architecture` | Relative ONNX architecture path when exported. |
-| `metric_naming` | Optional structured metric naming declaration. |
+| `metric_naming` | Optional structured metric naming declaration; with `schema_version` `2.x` (training naming 2.0) every logged key is held to it. |
+| `validation_sets` | Optional validation sets by key: paths of `set.json` and `passes.jsonl`, schema version, metric namespace, label. |
+| `naming_report` | Naming problems of a training naming 2.0 run and of its validation sets, each counted once per key and code. |
 | `pipeline` | Optional pipeline attachment identity. |
 | `updated_at` | Last observed write time for tracked artifacts. |
 | `error`, `traceback` | Terminal failure details when applicable. |
@@ -242,6 +248,32 @@ Every line in `train.jsonl` or `val.jsonl` is an independent JSON object:
 
 This makes metric writes append-only and allows standard streaming tools to
 read a file while training continues. Validation records omit `elapsed_sec`.
+
+Under training naming 2.0 every key of these records decomposes under a
+declared `<scope>.train` namespace and has a definition in `meta.json`
+(`metric_naming`); evaluation names (`depth.eval.…`) never appear here.
+
+## Validation sets
+
+A validation set is an evaluation of the live model on a fixed population
+([training.md](https://github.com/d-rothen/euler-metric-naming/blob/main/docs/training.md)
+§3 of euler-metric-naming). `validation/<key>/set.json` holds its document,
+written once: the metricSet envelope and the contract-v2 `protocol` of that
+evaluation (references, configured parameters, population, definitions).
+`validation/<key>/passes.jsonl` holds one record per pass:
+
+```json
+{"step": 7554, "epoch": 5, "wall_time": 1794651078.2,
+ "metrics": {"sparsedepth.eval.metric.standard.image_mean.absrel": 0.4307},
+ "parameters": {"spatial.method": "pointcloud_projection", "depth.alignment.applied": false},
+ "observations": {"domain.grid": [768, 1536], "depth.cap.clipped": 0.0},
+ "per_item": {"sparsedepth.eval.metric.standard.absrel": [0.41, 0.45]},
+ "series": {"sparsedepth.eval.metric.standard.count": [18120, 17604]}}
+```
+
+A consumer turns a set and a pass into the evaluation it stands for
+(`euler_metric_naming.contract.load_validation_pass`) and compares it with any
+evaluation, or with another pass, using the contract's verdicts.
 
 ## Output manifests
 

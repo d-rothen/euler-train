@@ -21,6 +21,8 @@ euler_train.init(
     stream=None,
     metric_naming=None,
     pipeline=None,
+    modality_roles=None,
+    strict_naming=False,
 ) -> Run
 ```
 
@@ -37,9 +39,10 @@ euler_train.init(
 | `evaluations` | Mapping of evaluation key to evaluation metadata, commonly supplied while resuming a run. |
 | `mode` | Process label such as `train`, `val` or `eval`; adds a lifecycle record below `meta.json["modes"]`. |
 | `stream` | Optional stream config, consumer or sequence of consumers. See [Streaming](streaming.md). |
-| `metric_naming` | Structured naming declaration stored with the run and included in stream initialization. |
+| `metric_naming` | Structured naming declaration stored with the run and included in stream initialization. A training naming 2.0 declaration holds the run to it (see [Training naming 2.0](#training-naming-20)). |
 | `pipeline` | Pipeline identity with a required non-empty `attach_id`. If omitted, `$EULER_SESSION_ID` is used when set. |
 | `modality_roles` | Experiment role of each logged modality, e.g. `{"hazy": "input", "depth": "target"}`. Fills `used_as`/`slot` that the dataset does not declare. See [Dataset roles](#dataset-roles). |
+| `strict_naming` | Raise `euler_train.NamingError` on the first naming problem instead of warning; for CI and smoke runs. Needs a training naming 2.0 declaration and euler-metric-naming 0.4 or newer. |
 
 When `dir` is omitted, the project name comes from the Git root (or current
 directory) and the base directory is resolved in this order:
@@ -85,6 +88,61 @@ Training records are appended to `train.jsonl`; all validation records are
 appended to `val.jsonl`. With the `[gpu]` extra installed, GPU utilization and
 memory values are sampled every 100 steps by default. If `metric_naming` is
 configured, these automatic metrics use the `sys.train.*` namespace.
+
+### Training naming 2.0
+
+A declaration from `MetricNamespace(..., metrics=...)` (euler-metric-naming
+0.4) carries `schema_version: "2.0"` and a metric definition for every base
+metric ([training.md](https://github.com/d-rothen/euler-metric-naming/blob/main/docs/training.md)
+there). Such a run is held to it, with no mixing of old and new names: every
+key of `train.jsonl` and `val.jsonl` must decompose under a declared
+`<scope>.train` namespace and have a definition, and every value must be a
+finite number. With the `[naming]` extra installed, euler-train checks each
+distinct key once:
+
+| Code | The key |
+|---|---|
+| `no_namespace` | starts with no declared namespace (`loss`, `val/sky/mask_iou`) |
+| `evaluation_name` | is an evaluation name (`depth.eval.…`): log it with `log_validation` |
+| `no_decomposition` | does not decompose under its namespace's axes |
+| `no_definition` | has a base metric without a definition |
+| `not_a_number` | has a value that is not a finite number (booleans included) |
+
+A problem is warned about once and counted in `meta.json["naming_report"]`
+(source, key, code, count, first step); the value is still written. With
+`strict_naming=True` the first problem raises `NamingError`. Schema-1
+declarations and runs without one are not checked and behave as before.
+
+## Validation sets
+
+Validation scores that an evaluator also computes (AbsRel, δ < 1.25 on a
+held-out set) are a **validation set**: an evaluation of the live model on a
+fixed population, declared once and recorded per pass with the evaluator's
+own metric names, so a consumer can judge a validation curve against the
+final evaluation (`same protocol`, `compared on 64 shared files`, …).
+euler-eval builds both documents (`euler_eval.validation.DepthValidationSet`):
+
+```python
+muses = DepthValidationSet("muses", sparse_depth_path=..., intrinsics_path=...,
+                           camera_extrinsics_path=..., indices=range(64))
+run.declare_validation_set(muses.key, muses.declaration())   # once per run
+
+validation = muses.new_pass()
+for index in muses.indices:
+    sample = muses.dataset[index]
+    validation.add(sample, model(sample), intrinsics=K)
+run.log_validation(muses.key, validation.record(step=step, epoch=epoch))
+```
+
+| Method | Writes |
+|---|---|
+| `declare_validation_set(key, document)` | `validation/<key>/set.json` once, and `meta.json["validation_sets"][key]` (paths, schema version, metric namespace, label). The same document again (on resume) is a no-op; a different one raises `ValueError`. |
+| `log_validation(key, record=None, *, step=None, epoch=None, **fields)` | one line of `validation/<key>/passes.jsonl`; `wall_time` is added when missing. The set must be declared (in this process or before a resume). |
+
+Keys match `[a-z0-9][a-z0-9_-]{0,63}`. Nothing goes to `val.jsonl`, where
+several sets would mix under shared names. Set documents and pass records are
+checked with euler-metric-naming when it is installed; problems land in
+`naming_report` under `validation/<key>`.
 
 ## Save model outputs
 
@@ -140,6 +198,26 @@ run.log_saved_checkpoint(path, epoch=5, step=2000, is_best=True)
 
 This records the file without rewriting it. Marking a checkpoint `is_best=True`
 clears that flag from earlier checkpoint entries.
+
+### Record how a checkpoint was selected
+
+```python
+run.log_saved_checkpoint(
+    path, epoch=5, step=7554, is_best=True,
+    selection_metric="sparsedepth.eval.metric.standard.image_mean.absrel",
+    selection_value=0.431,
+    selection_direction="lower",       # from the metric's definition
+    validation_set="muses",
+)
+run.save_checkpoint(model, epoch=5, step=7554, selection={
+    "metric": "...", "value": 0.431, "direction": "lower",
+    "validation_set": "muses", "is_best": True,
+})
+```
+
+The fields land in the checkpoint's `meta.json` entry
+(`selection_metric`, `selection_value`, `selection_direction`,
+`validation_set`); a direction other than `lower` or `higher` raises.
 
 ## Model architecture
 
