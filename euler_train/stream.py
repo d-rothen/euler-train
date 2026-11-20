@@ -182,6 +182,15 @@ class OutputStream:
         self._consumers = active
 
 
+#: Event types a consumer receives only when its session advertises the
+#: capability (euler-view lists its capabilities in the session response).
+#: Older ingests reject unknown event types for the whole batch.
+CAPABILITY_EVENTS = {
+    "validation_set": "validation_sets/1",
+    "validation": "validation_sets/1",
+}
+
+
 class EulerViewStreamConsumer:
     """Best-effort HTTP consumer for the model-run streaming API."""
 
@@ -197,6 +206,13 @@ class EulerViewStreamConsumer:
         self._next_retry_at = 0.0
         self._last_warning: tuple[str, float] | None = None
         self._closed = False
+        self._capabilities: frozenset[str] = frozenset()
+        self._skipped_unsupported = 0
+
+    @property
+    def capabilities(self) -> frozenset[str]:
+        """Capabilities the current session advertised (empty without a session)."""
+        return self._capabilities
 
     def bind(self, context: StreamContext) -> None:
         self._context = context
@@ -258,6 +274,7 @@ class EulerViewStreamConsumer:
         if not self._ensure_session(force=force):
             return
 
+        self._drop_unsupported()
         while self._pending:
             batch = self._pending[: self.config.batch_size]
             try:
@@ -336,7 +353,28 @@ class EulerViewStreamConsumer:
 
         self._session_expires_at = _parse_timestamp(payload.get("expiresAt"))
         self._next_retry_at = 0.0
+        capabilities = payload.get("capabilities")
+        self._capabilities = frozenset(
+            item for item in capabilities if isinstance(item, str)
+        ) if isinstance(capabilities, list) else frozenset()
         return True
+
+    def _drop_unsupported(self) -> None:
+        """Leave out events whose capability the session did not advertise."""
+        kept = []
+        for event in self._pending:
+            needed = CAPABILITY_EVENTS.get(event.get("type"))
+            if needed is not None and needed not in self._capabilities:
+                self._skipped_unsupported += 1
+                continue
+            kept.append(event)
+        if len(kept) != len(self._pending):
+            log.debug(
+                "Not streaming %d event(s) the session does not support; "
+                "they are in the run directory",
+                len(self._pending) - len(kept),
+            )
+        self._pending = kept
 
     def _post_json(
         self,

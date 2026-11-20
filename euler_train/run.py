@@ -21,6 +21,7 @@ from .outputs import save_output_tree
 from .slurm import get_slurm_info
 from .git_info import get_code_ref
 from .environment import get_run_environment
+from .naming import NamingGuard, require_strict
 from .stream import OutputStream, StreamContext, coerce_output_stream
 from euler_connector import progress as euler_progress
 from ._dataset_contract import normalize_modality_roles
@@ -28,6 +29,10 @@ from ._dataset_contract import normalize_modality_roles
 log = logging.getLogger("euler_train")
 
 _DATASET_META_NAMESPACES = ("euler_loading", "euler_train")
+#: Key of a validation set (docs/training.md of euler-metric-naming).
+_VALIDATION_SET_KEY_RE = re.compile(r"^[a-z0-9][a-z0-9_-]{0,63}$")
+_VALIDATION_SET_KIND = "euler.validation_set"
+_SELECTION_DIRECTIONS = ("lower", "higher")
 
 
 class Run:
@@ -53,6 +58,7 @@ class Run:
         metric_naming: dict[str, Any] | None = None,
         pipeline: dict[str, Any] | None = None,
         modality_roles: Mapping[str, Any] | None = None,
+        strict_naming: bool = False,
     ) -> None:
         # Validate the trainer's roles and describe the datasets before
         # anything touches the disk: a dataset that cannot be logged must not
@@ -82,6 +88,9 @@ class Run:
 
         self.project_dir: Path = Path(dir) if dir is not None else _infer_dir()
         resuming = run_id is not None
+        if strict_naming and not resuming:
+            # Before anything touches the disk, like the dataset checks above.
+            require_strict(metric_naming)
         self._resuming = resuming
         self.run_id: str = run_id if resuming else _generate_run_id()
         self.dir = self.project_dir / "runs" / self.run_id
@@ -207,6 +216,15 @@ class Run:
         if metric_naming is not None:
             _validate_metric_naming(metric_naming)
             self._meta["metric_naming"] = metric_naming
+        # Training naming 2.0 runs are held to their declaration for every key
+        # (warned once, counted in naming_report; strict_naming raises).
+        self._naming_guard = NamingGuard(
+            self._meta.get("metric_naming"),
+            strict=strict_naming,
+            report=self._meta.get("naming_report"),
+        )
+        self._validation_sets: dict[str, dict[str, Any]] = {}
+        self._sync_naming_report()
 
         # ── pipeline identity (optional, for automated pipelines) ──
         if pipeline is None:
@@ -322,6 +340,13 @@ class Run:
         rate, gradient norm, evaluation scores, …).  ``step``, ``epoch``,
         and ``wall_time`` are prepended automatically; ``elapsed_sec`` is
         added for training records.
+
+        A run that declares training naming 2.0 is held to it: every key
+        must decompose under a declared namespace and have a definition, and
+        every value must be a finite number. A key that does not is still
+        written, warned about once and counted in ``naming_report`` (or
+        raises with ``strict_naming=True``). Validation scores that an
+        evaluator also computes belong in :meth:`log_validation`, never here.
         """
         record: dict[str, Any] = {
             "step": step,
@@ -335,6 +360,8 @@ class Run:
             record.update(self._get_gpu_stats())
 
         filename = "train.jsonl" if mode == "train" else "val.jsonl"
+        self._naming_guard.check_record(filename, record, step)
+        self._sync_naming_report()
         log_path = self.dir / filename
         append_jsonl(log_path, record)
         self._record_artifact_update(log_path)
@@ -350,6 +377,139 @@ class Run:
         )
         if mode == "train":
             self._report_progress(step=step, epoch=epoch)
+
+    # ── validation sets ───────────────────────────────────────────
+
+    def declare_validation_set(self, key: str, document: Mapping[str, Any]) -> Path:
+        """Declare a validation set and write its document once.
+
+        *document* is the set document of ``docs/training.md`` (§3.2) of
+        euler-metric-naming, typically
+        ``euler_eval.validation.DepthValidationSet.declaration()``: the
+        metricSet and protocol of the evaluation the set's passes stand for.
+        It is written to ``validation/<key>/set.json`` and pointed at from
+        ``meta.json["validation_sets"][key]``. Declaring a key again (on
+        resume) with the same document is a no-op; with a different document
+        it raises ``ValueError``, because one set's curve must not mix two
+        protocols.
+
+        Returns the path of the set document.
+        """
+        if not (isinstance(key, str) and _VALIDATION_SET_KEY_RE.match(key)):
+            raise ValueError("a validation set key must match [a-z0-9][a-z0-9_-]{0,63}")
+        if not isinstance(document, Mapping) or document.get("kind") != _VALIDATION_SET_KIND:
+            raise ValueError(f"a validation set document has kind {_VALIDATION_SET_KIND!r}")
+        if document.get("key", key) != key:
+            raise ValueError(
+                f"the document declares key {document.get('key')!r}, not {key!r}"
+            )
+        normalized = _json_roundtrip(document)
+        set_dir = self.dir / "validation" / key
+        set_path = set_dir / "set.json"
+        if set_path.exists():
+            existing = read_json(set_path)
+            if existing != normalized:
+                raise ValueError(
+                    f"validation set {key!r} was declared with a different document; "
+                    "declare a new key for a new protocol"
+                )
+            first = False
+        else:
+            self._naming_guard.check_set(key, normalized)
+            write_json(set_path, normalized)
+            self._record_artifact_update(set_path)
+            first = True
+        self._validation_sets[key] = normalized
+        metric_set = normalized.get("metricSet")
+        namespace = metric_set.get("metricNamespace") if isinstance(metric_set, Mapping) else None
+        pointer: dict[str, Any] = {
+            "schema_version": str(normalized.get("schemaVersion", "1.0")),
+            "set": f"validation/{key}/set.json",
+            "passes": f"validation/{key}/passes.jsonl",
+            "metric_namespace": namespace,
+        }
+        if isinstance(normalized.get("label"), str):
+            pointer["label"] = normalized["label"]
+        sets = self._meta.get("validation_sets")
+        self._meta["validation_sets"] = {**(sets if isinstance(sets, dict) else {}), key: pointer}
+        self._sync_naming_report()
+        self._flush_meta()
+        if first:
+            self._emit_stream_event(
+                {
+                    "type": "validation_set",
+                    "eventId": self._make_stream_event_id("validation_set", key),
+                    "key": key,
+                    "document": copy.deepcopy(normalized),
+                },
+            )
+        return set_path
+
+    def log_validation(
+        self,
+        key: str,
+        record: Mapping[str, Any] | None = None,
+        *,
+        step: int | None = None,
+        epoch: int | None = None,
+        **fields: Any,
+    ) -> None:
+        """Append one validation pass record to ``validation/<key>/passes.jsonl``.
+
+        *record* is a pass record of ``docs/training.md`` (§3.3) of
+        euler-metric-naming, typically
+        ``euler_eval.validation.DepthValidationPass.record(...)``; *step*,
+        *epoch* and other keyword fields (``metrics``, ``parameters``,
+        ``observations``, ``population``, ``per_item``, ``series``) fill or
+        override it. ``wall_time`` is added when missing. The set must have
+        been declared with :meth:`declare_validation_set` (in this process
+        or before a resume). Records are checked against the set document;
+        problems are reported like naming problems. Nothing goes to
+        ``val.jsonl``: several sets share their metric names.
+        """
+        document = self._validation_set(key)
+        pass_record: dict[str, Any] = dict(record or {})
+        if step is not None:
+            pass_record["step"] = step
+        if epoch is not None:
+            pass_record["epoch"] = epoch
+        pass_record.update(fields)
+        pass_record.setdefault("wall_time", time.time())
+        pass_record = _json_roundtrip(pass_record)
+        self._naming_guard.check_pass(key, document, pass_record, pass_record.get("step"))
+        self._sync_naming_report()
+        path = self.dir / "validation" / key / "passes.jsonl"
+        append_jsonl(path, pass_record)
+        self._record_artifact_update(path)
+        self._flush_meta()
+        self._emit_stream_event(
+            {
+                "type": "validation",
+                "eventId": self._make_stream_event_id(
+                    "validation", key, pass_record.get("step")
+                ),
+                "key": key,
+                "record": copy.deepcopy(pass_record),
+            },
+        )
+
+    def _validation_set(self, key: str) -> dict[str, Any]:
+        document = self._validation_sets.get(key)
+        if document is not None:
+            return document
+        set_path = self.dir / "validation" / str(key) / "set.json"
+        if not set_path.exists():
+            raise KeyError(
+                f"validation set {key!r} is not declared; call declare_validation_set first"
+            )
+        document = read_json(set_path)
+        self._validation_sets[key] = document
+        return document
+
+    def _sync_naming_report(self) -> None:
+        report = self._naming_guard.report()
+        if report is not None:
+            self._meta["naming_report"] = report
 
     # ── progress ──────────────────────────────────────────────────
 
@@ -649,6 +809,7 @@ class Run:
         epoch: int,
         step: int,
         optimizer: Any = None,
+        selection: Mapping[str, Any] | None = None,
         **extra: Any,
     ) -> Path:
         """Save a checkpoint to ``epoch_{N}.pt``.
@@ -659,7 +820,9 @@ class Run:
 
         If *model* (or *optimizer*) exposes ``.state_dict()``, it is called
         automatically.  Extra keyword arguments are included in the saved
-        dict.
+        dict. *selection* records how the checkpoint was selected (see
+        :meth:`log_saved_checkpoint`): ``{"metric", "value", "direction",
+        "validation_set", "is_best"}``.
         """
         import torch
 
@@ -679,7 +842,19 @@ class Run:
             )
         state.update(extra)
         torch.save(state, path)
-        self.log_saved_checkpoint(path, epoch=epoch, step=step)
+        selection = dict(selection or {})
+        self.log_saved_checkpoint(
+            path,
+            epoch=epoch,
+            step=step,
+            is_best=bool(selection.pop("is_best", False)),
+            selection_metric=selection.pop("metric", None),
+            selection_value=selection.pop("value", None),
+            selection_direction=selection.pop("direction", None),
+            validation_set=selection.pop("validation_set", None),
+        )
+        if selection:
+            raise ValueError(f"unknown selection fields: {sorted(selection)}")
         return path
 
     def log_saved_checkpoint(
@@ -689,13 +864,28 @@ class Run:
         epoch: int,
         step: int,
         is_best: bool = False,
+        selection_metric: str | None = None,
+        selection_value: float | None = None,
+        selection_direction: str | None = None,
+        validation_set: str | None = None,
     ) -> None:
         """Record a saved checkpoint in ``meta.json``.
 
         Call this after saving a checkpoint yourself, or let
         :meth:`save_checkpoint` call it automatically.  When *is_best*
         is ``True``, any previous checkpoint marked as best is cleared.
+
+        How the checkpoint was selected can be recorded with it:
+        *selection_metric* (the full metric name the selection read, e.g. a
+        validation set's ``sparsedepth.eval.metric.standard.image_mean.absrel``),
+        *selection_value* (its value here), *selection_direction* (``lower``
+        or ``higher``, best taken from the metric's definition) and
+        *validation_set* (the set's key when the metric is one of its names).
         """
+        if selection_direction is not None and selection_direction not in _SELECTION_DIRECTIONS:
+            raise ValueError("selection_direction must be 'lower' or 'higher'")
+        if selection_metric is not None and not isinstance(selection_metric, str):
+            raise TypeError("selection_metric must be a metric name")
         checkpoint_path = Path(path)
         checkpoints: list[dict[str, Any]] = self._meta.get("checkpoints", [])
 
@@ -710,6 +900,13 @@ class Run:
         }
         if is_best:
             record["is_best"] = True
+        selection = {
+            "selection_metric": selection_metric,
+            "selection_value": selection_value,
+            "selection_direction": selection_direction,
+            "validation_set": validation_set,
+        }
+        record.update({field: value for field, value in selection.items() if value is not None})
 
         checkpoints.append(record)
         self._meta["checkpoints"] = checkpoints
@@ -1205,6 +1402,15 @@ def _normalize_mode(mode: str | None) -> str | None:
     if not normalized:
         raise ValueError("mode must be a non-empty string when provided")
     return normalized
+
+
+def _json_roundtrip(value: Any) -> Any:
+    """*value* as it reads back from a JSON file (tuples become lists, …)."""
+    import json
+
+    from .serialization import _json_default
+
+    return json.loads(json.dumps(value, default=_json_default))
 
 
 def _validate_metric_naming(value: Any) -> None:

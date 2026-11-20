@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "euler-train"
-version = "2.14.0"
+version = "2.15.0"
 description = "Lightweight file-based experiment logger for PyTorch"
 readme = "README.md"
 requires-python = ">=3.9"
@@ -44,7 +44,7 @@ dependencies = [
 images = ["Pillow"]
 gpu = ["nvidia-ml-py"]
 architecture = ["torch", "onnx", "onnxruntime", "onnxsim"]
-naming = ["euler-metric-naming"]
+naming = ["euler-metric-naming>=0.4"]
 datasets = ["ds-crawler>=2.3.0"]
 yaml = ["PyYAML"]
 dev = ["pytest", "Pillow", "torch", "PyYAML", "ds-crawler>=2.3.0"]
@@ -63,3 +63,10 @@ include = ["euler_train*"]
 
 [tool.pytest.ini_options]
 pythonpath = ["."]
+
+[tool.uv.sources]
+# Training naming 2.0 checks and validation sets need euler-metric-naming 0.4,
+# which lives on its training-naming-v2 branch until it is released.
+# Temporary: that branch is not pushed yet, so `uv sync` cannot resolve it
+# until it is; replace this with the PyPI release before merging.
+euler-metric-naming = { git = "https://github.com/d-rothen/euler-metric-naming", branch = "training-naming-v2" }
