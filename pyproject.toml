@@ -63,10 +63,3 @@ include = ["euler_train*"]
 
 [tool.pytest.ini_options]
 pythonpath = ["."]
-
-[tool.uv.sources]
-# Training naming 2.0 checks and validation sets need euler-metric-naming 0.4,
-# which lives on its training-naming-v2 branch until it is released.
-# Temporary: that branch is not pushed yet, so `uv sync` cannot resolve it
-# until it is; replace this with the PyPI release before merging.
-euler-metric-naming = { git = "https://github.com/d-rothen/euler-metric-naming", branch = "training-naming-v2" }
